@@ -86,6 +86,26 @@ dependencies:
 	}
 }
 
+func TestLoadManifestRejectsCredentialBearingMCPArguments(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, ManifestFileName), `
+name: safe-pack
+version: 1.0.0
+dependencies:
+  mcp:
+    - name: github
+      transport: stdio
+      command: npx
+      args:
+        - --token=not-a-real-token
+      auth: receiver
+`)
+
+	if _, err := LoadManifest(dir); err == nil {
+		t.Fatal("LoadManifest() error = nil, want credential-bearing MCP argument to be rejected")
+	}
+}
+
 func TestDefaultManifestRoundTripsCapabilities(t *testing.T) {
 	dir := t.TempDir()
 	manifest := DefaultManifest("cap-pack")

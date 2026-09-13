@@ -175,6 +175,11 @@ func LoadManifest(dir string) (Manifest, error) {
 	if err := validateMCPManifestFields(data); err != nil {
 		return Manifest{}, fmt.Errorf("parse manifest %s: %w", path, err)
 	}
+	for i, dep := range manifest.Dependencies.MCP {
+		if err := validateMCPArgs(dep.Args); err != nil {
+			return Manifest{}, fmt.Errorf("parse manifest %s: dependencies.mcp[%d]: %w", path, i, err)
+		}
+	}
 	if manifest.Name == "" {
 		return Manifest{}, fmt.Errorf("manifest %s missing name", path)
 	}

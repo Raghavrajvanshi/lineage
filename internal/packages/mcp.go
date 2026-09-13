@@ -3,6 +3,7 @@ package packages
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -11,6 +12,12 @@ import (
 var allowedMCPFields = map[string]bool{
 	"name": true, "transport": true, "command": true, "args": true, "url": true, "auth": true,
 }
+
+// credentialBearingMCPArg matches command arguments that attempt to carry a
+// credential or configure a credential source. Package manifests are portable
+// declarations, not a credentials transport: authentication is described by
+// auth: receiver and supplied in the receiver's local environment/config.
+var credentialBearingMCPArg = regexp.MustCompile(`(?i)^--?[a-z0-9_.-]*(token|secret|password|api[-_]?key|credential|authorization|bearer)[a-z0-9_.-]*(?:=|:|$)`)
 
 // validateMCPManifestFields rejects unmodelled MCP fields before the typed
 // manifest decoder can discard them. In particular, this prevents a package
@@ -52,6 +59,10 @@ func ValidateMCPDependencies(deps []MCPDependency, networkCapabilities []string)
 			errors = append(errors, fmt.Sprintf("%s: duplicate MCP server name %q", prefix, dep.Name))
 		}
 		seen[dep.Name] = true
+		if err := validateMCPArgs(dep.Args); err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", prefix, err))
+		}
+
 
 		switch dep.Transport {
 		case "stdio":
@@ -79,6 +90,19 @@ func ValidateMCPDependencies(deps []MCPDependency, networkCapabilities []string)
 		}
 	}
 	return errors
+}
+
+func validateMCPArgs(args []string) error {
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if credentialBearingMCPArg.MatchString(arg) {
+			return fmt.Errorf("args must not carry credential-bearing options; declare auth: receiver and keep credentials receiver-local")
+		}
+		if _, matched := matchesSecretContent([]byte(arg)); matched {
+			return fmt.Errorf("args must not contain secret-shaped values; declare auth: receiver and keep credentials receiver-local")
+		}
+	}
+	return nil
 }
 
 func networkCapabilityAllows(capabilities []string, host string) bool {

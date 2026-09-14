@@ -44,3 +44,4 @@ Each record should include:
 - [0014 Content-Addressed Snapshot Store Separates Objects From Manifests](0014-content-addressed-snapshot-store-separates-objects-from-manifests.md)
 - [0015 The `.lineage` Directory Is A Versioned, Enumerated Container With A Gitignore Default](0015-the-lineage-directory-is-a-versioned-enumerated-container.md)
 - [0016 Prioritize Package Distribution And Behavioral Compilation](0016-prioritize-package-distribution-and-behavioral-compilation.md)
+- [0018 Behavioral Model Is A Versioned, Evidence-Linked Schema](0018-behavioral-model-is-a-versioned-evidence-linked-schema.md)

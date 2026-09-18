@@ -71,3 +71,9 @@ func ObjectsDir(home string) string {
 func SnapshotsDir(home string) string {
 	return filepath.Join(home, "snapshots")
 }
+
+// PackageReleasesDir stores complete installed-package references. The
+// immutable bodies themselves remain in ObjectsDir.
+func PackageReleasesDir(home string) string {
+	return filepath.Join(home, "package-releases")
+}

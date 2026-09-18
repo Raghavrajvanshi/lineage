@@ -14,6 +14,7 @@ import (
 	"github.com/agentic-lineage/lineage/internal/atomicfile"
 	"github.com/agentic-lineage/lineage/internal/auth"
 	"github.com/agentic-lineage/lineage/internal/config"
+	"github.com/agentic-lineage/lineage/internal/distribution"
 	"github.com/agentic-lineage/lineage/internal/graph"
 	"github.com/agentic-lineage/lineage/internal/materialize"
 	"github.com/agentic-lineage/lineage/internal/packages"
@@ -339,7 +340,7 @@ func runPackagePull(args []string, home string, stdout, stderr io.Writer) error 
 	// Pull is an unauthenticated read - the registry doesn't gate who can
 	// fetch a published package, only who can publish one.
 	cfg := packages.RegistryConfig{URL: os.Getenv("LINEAGE_REGISTRY_URL")}
-	name, err := packages.Pull(ref, cfg, destParent, asName)
+	name, err := distribution.Pull(ref, cfg, home, destParent, asName)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return err
@@ -386,7 +387,7 @@ func runPackageImport(args []string, home string, stdout, stderr io.Writer) erro
 		return err
 	}
 
-	name, err := packages.Import(f, destParent, asName)
+	name, err := distribution.ImportArchive(f, home, destParent, asName)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return err
@@ -991,18 +992,18 @@ func enableRef(ref, home string, autoApprove, preConfirmed bool, stdin *bufio.Re
 // the content matches (digests equal) - a genuine conflict, the same
 // name/version now resolving to different content, still fails loudly
 // instead of silently keeping the stale local copy.
-func importAddSource(ref, destParent string) (name, action string, err error) {
+func importAddSource(ref, home, destParent string) (name, action string, err error) {
 	if info, statErr := os.Stat(ref); statErr == nil && !info.IsDir() {
 		f, openErr := os.Open(ref)
 		if openErr != nil {
 			return "", "", openErr
 		}
 		defer f.Close()
-		name, err = packages.Import(f, destParent, "")
+		name, err = distribution.ImportArchive(f, home, destParent, "")
 		action = "imported"
 	} else {
 		cfg := packages.RegistryConfig{URL: os.Getenv("LINEAGE_REGISTRY_URL")}
-		name, err = packages.Pull(ref, cfg, destParent, "")
+		name, err = distribution.Pull(ref, cfg, home, destParent, "")
 		action = "fetched"
 	}
 
@@ -1048,7 +1049,7 @@ func runAdd(args []string, home string, stdin *bufio.Reader, stdout, stderr io.W
 		return err
 	}
 
-	name, action, err := importAddSource(ref, destParent)
+	name, action, err := importAddSource(ref, home, destParent)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return err
@@ -1363,9 +1364,15 @@ func runInspect(args []string, home string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stderr, err)
 		return err
 	}
+	weight, weightErr := inspectWeight(home, pkg.Path)
+	if weightErr != nil {
+		// Weight is supplementary to inspection. Keep the existing read-only
+		// report useful for packages that cannot enter the stricter CAS path.
+		weight = nil
+	}
 
 	if yamlOutput {
-		return writeYAML(stdout, inspectReport(pkg, findings))
+		return writeYAML(stdout, inspectReport(pkg, findings, weight))
 	}
 
 	fmt.Fprintf(stdout, "package: %s@%s (schema %d)\n", pkg.Manifest.Name, pkg.Manifest.Version, pkg.Manifest.Schema)
@@ -1383,8 +1390,48 @@ func runInspect(args []string, home string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "capabilities:\n")
 	fmt.Fprintf(stdout, "  filesystem.read: %s\n", listValue(pkg.Manifest.Capabilities.Filesystem.Read))
 	fmt.Fprintf(stdout, "  network: %s\n", listValue(pkg.Manifest.Capabilities.Network))
+	if weight != nil {
+		writeWeightReport(stdout, *weight)
+	} else {
+		fmt.Fprintf(stdout, "weight: unavailable (%v)\n", weightErr)
+	}
 	printInstructionFindings(stdout, findings)
 	return nil
+}
+
+func inspectWeight(home, packagePath string) (*snapshot.WeightReport, error) {
+	contentManifest, err := snapshot.BuildContentManifest(packagePath)
+	if err != nil {
+		return nil, err
+	}
+	report, err := snapshot.InspectWeight(home, contentManifest)
+	if err != nil {
+		return nil, err
+	}
+	return &report, nil
+}
+
+// writeWeightReport presents exact byte totals separately from the generic
+// context estimate, whose identity makes its approximate nature visible.
+func writeWeightReport(stdout io.Writer, report snapshot.WeightReport) {
+	fmt.Fprintln(stdout, "weight:")
+	fmt.Fprintf(stdout, "  stored_bytes: %d\n", report.StoredBytes)
+	fmt.Fprintf(stdout, "  stub_bytes: %d\n", report.Stub.Bytes)
+	fmt.Fprintf(stdout, "  full_body_bytes: %d\n", report.FullBody.Bytes)
+	fmt.Fprintf(stdout, "  local_verified_bytes: %d\n", report.LocalStorage.VerifiedBytes)
+	fmt.Fprintf(stdout, "  local_missing_bytes: %d\n", report.LocalStorage.MissingBytes)
+	fmt.Fprintf(stdout, "  local_corrupt_bytes: %d\n", report.LocalStorage.CorruptBytes)
+	fmt.Fprintf(stdout, "  estimator: %s %s (estimated)\n", report.Estimator.Name, report.Estimator.Version)
+	writeContextEstimate(stdout, "stub_context_tokens", report.Stub.Context)
+	writeContextEstimate(stdout, "full_body_context_tokens", report.FullBody.Context)
+}
+
+func writeContextEstimate(stdout io.Writer, name string, estimate snapshot.ContextEstimate) {
+	if estimate.Available {
+		fmt.Fprintf(stdout, "  %s: ~%d\n", name, estimate.Tokens)
+		return
+	}
+	fmt.Fprintf(stdout, "  %s: unavailable (%s)\n", name, estimate.Reason)
 }
 
 func writeMCPDependencies(stdout io.Writer, deps []packages.MCPDependency) {

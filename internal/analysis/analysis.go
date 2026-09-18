@@ -13,7 +13,10 @@ package analysis
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/agentic-lineage/lineage/internal/inventory"
 	"github.com/agentic-lineage/lineage/internal/model"
@@ -67,14 +70,105 @@ func Analyze(ctx context.Context, p Provider, inv inventory.Inventory) (Result, 
 	if err != nil {
 		return Result{}, fmt.Errorf("validate provider output: %w", err)
 	}
-	report.Notes = append(report.Notes, qualityNotes(m, inv)...)
+
+	refs := allEvidenceRefs(m)
+	// A fabricated quote is evidence drift by another name — a claim
+	// citing a real path+digest whose "supporting" text doesn't actually
+	// appear in that file is not meaningfully different from citing a
+	// stale digest, which model.Validate already treats as an Errors
+	// entry, never a Note. Verification needs file content model.Validate
+	// doesn't have (it only sees inventory metadata), so it lives here,
+	// but the failure belongs in Errors for the same reason.
+	report.Errors = append(report.Errors, verifyQuotedEvidence(refs, inv)...)
+	report.Notes = append(report.Notes, qualityNotes(refs, m, inv)...)
 
 	return Result{Inventory: inv, Model: m, Report: report}, nil
 }
 
+// evidenceRefContext is one EvidenceRef together with a human-readable
+// description of where in the model it came from, shared by qualityNotes
+// and verifyQuotedEvidence so both walk the model's Steps/Claims/Decisions
+// exactly once between them.
+type evidenceRefContext struct {
+	Context string
+	Ref     model.EvidenceRef
+}
+
+func allEvidenceRefs(m model.BehavioralModel) []evidenceRefContext {
+	var refs []evidenceRefContext
+	add := func(context string, evidence []model.EvidenceRef) {
+		for _, ref := range evidence {
+			refs = append(refs, evidenceRefContext{Context: context, Ref: ref})
+		}
+	}
+
+	for _, step := range m.Steps {
+		add(fmt.Sprintf("step %q", step.ID), step.Evidence)
+		for _, claims := range [][]model.Claim{step.Inputs, step.Outputs, step.Skills, step.Tools, step.References} {
+			for _, c := range claims {
+				add(fmt.Sprintf("step %q claim %q", step.ID, c.Value), c.Evidence)
+			}
+		}
+	}
+	for _, d := range m.Decisions {
+		add(fmt.Sprintf("decision %q", d.ID), d.Evidence)
+	}
+	return refs
+}
+
+// verifyQuotedEvidence re-reads each cited file from inv.Root — the same
+// workspace inv was discovered from — and checks that every non-empty
+// EvidenceRef.Note actually appears in that file's content (at the cited
+// Line, if set; anywhere in the file otherwise). model.Validate already
+// proves the path/digest resolve; this proves the quote attached to that
+// citation is real rather than invented, which is exactly the gap a
+// provider could otherwise exploit: cite a real, unchanged file but
+// fabricate what it says.
+//
+// A ref with no Note is skipped here — that's qualityNotes' concern
+// (nothing to verify against), not a fabrication to catch.
+func verifyQuotedEvidence(refs []evidenceRefContext, inv inventory.Inventory) []string {
+	content := make(map[string]string)
+	read := func(path string) (string, bool) {
+		if c, ok := content[path]; ok {
+			return c, true
+		}
+		data, err := os.ReadFile(filepath.Join(inv.Root, filepath.FromSlash(path)))
+		if err != nil {
+			return "", false
+		}
+		content[path] = string(data)
+		return content[path], true
+	}
+
+	var errs []string
+	for _, rc := range refs {
+		ref := rc.Ref
+		if ref.Note == "" {
+			continue
+		}
+		text, ok := read(ref.Path)
+		if !ok {
+			errs = append(errs, fmt.Sprintf("%s: evidence for %q could not be re-read from %s to verify its quote", rc.Context, ref.Path, inv.Root))
+			continue
+		}
+		if ref.Line > 0 {
+			lines := strings.Split(text, "\n")
+			if ref.Line > len(lines) || !strings.Contains(lines[ref.Line-1], ref.Note) {
+				errs = append(errs, fmt.Sprintf("%s: evidence note for %q does not match line %d of the source file - possible fabricated quote", rc.Context, ref.Path, ref.Line))
+			}
+			continue
+		}
+		if !strings.Contains(text, ref.Note) {
+			errs = append(errs, fmt.Sprintf("%s: evidence note for %q does not appear anywhere in the source file - possible fabricated quote", rc.Context, ref.Path))
+		}
+	}
+	return errs
+}
+
 // qualityNotes flags provider output that is technically valid (it passes
-// model.Validate) but not trustworthy enough to accept without a second
-// look:
+// model.Validate and verifyQuotedEvidence) but not trustworthy enough to
+// accept without a second look:
 //
 //   - evidence with no supporting quote (EvidenceRef.Note), so a reviewer
 //     has nothing to spot-check the claim against without reopening the
@@ -91,35 +185,22 @@ func Analyze(ctx context.Context, p Provider, inv inventory.Inventory) (Result, 
 // These are judgment calls about analysis quality, not model/inventory
 // consistency, so they don't belong in model.Validate itself — they live
 // here, specific to this stage.
-func qualityNotes(m model.BehavioralModel, inv inventory.Inventory) []string {
+func qualityNotes(refs []evidenceRefContext, m model.BehavioralModel, inv inventory.Inventory) []string {
 	entries := make(map[string]inventory.Entry, len(inv.Entries))
 	for _, e := range inv.Entries {
 		entries[e.Path] = e
 	}
 
 	var notes []string
-	checkRefs := func(context string, refs []model.EvidenceRef) {
-		for _, ref := range refs {
-			entry, known := entries[ref.Path]
-			switch {
-			case known && entry.AmbiguousBasename && ref.Line == 0 && ref.Note == "":
-				notes = append(notes, fmt.Sprintf("%s: evidence cites %q, whose basename is ambiguous, with no line or note to disambiguate which file is meant", context, ref.Path))
-			case ref.Note == "":
-				notes = append(notes, fmt.Sprintf("%s: evidence for %q has no supporting note/quote", context, ref.Path))
-			}
+	for _, rc := range refs {
+		ref := rc.Ref
+		entry, known := entries[ref.Path]
+		switch {
+		case known && entry.AmbiguousBasename && ref.Line == 0 && ref.Note == "":
+			notes = append(notes, fmt.Sprintf("%s: evidence cites %q, whose basename is ambiguous, with no line or note to disambiguate which file is meant", rc.Context, ref.Path))
+		case ref.Note == "":
+			notes = append(notes, fmt.Sprintf("%s: evidence for %q has no supporting note/quote", rc.Context, ref.Path))
 		}
-	}
-
-	for _, step := range m.Steps {
-		checkRefs(fmt.Sprintf("step %q", step.ID), step.Evidence)
-		for _, claims := range [][]model.Claim{step.Inputs, step.Outputs, step.Skills, step.Tools, step.References} {
-			for _, c := range claims {
-				checkRefs(fmt.Sprintf("step %q claim %q", step.ID, c.Value), c.Evidence)
-			}
-		}
-	}
-	for _, d := range m.Decisions {
-		checkRefs(fmt.Sprintf("decision %q", d.ID), d.Evidence)
 	}
 
 	if len(m.Steps) > 0 && len(m.Decisions) > len(m.Steps) {

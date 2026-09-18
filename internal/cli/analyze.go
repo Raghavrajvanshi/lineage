@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/agentic-lineage/lineage/internal/analysis"
 	"github.com/agentic-lineage/lineage/internal/inventory"
@@ -70,23 +71,43 @@ func runAnalyze(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	return nil
 }
 
+// parseAnalyzeArgs parses `lineage analyze`'s arguments. Every recognized
+// option that takes a value (--fixture, --provider) is checked for a
+// missing value explicitly and rejected before it ever falls through to
+// being treated as the positional <path> - a bare "lineage analyze
+// --fixture" must not silently run against a workspace literally named
+// "--fixture". Any other argument starting with "-" is rejected outright
+// rather than being treated as a path, for the same reason.
 func parseAnalyzeArgs(args []string) (path, fixturePath, providerName string, yamlOutput bool, err error) {
 	providerName = "claude"
 	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "--yaml":
+		arg := args[i]
+		switch arg {
+		case "--yaml":
 			yamlOutput = true
-		case args[i] == "--fixture" && i+1 < len(args):
+			continue
+		case "--fixture":
+			if i+1 >= len(args) {
+				return "", "", "", false, fmt.Errorf("--fixture requires a value\n%s", analyzeUsage)
+			}
 			i++
 			fixturePath = args[i]
-		case args[i] == "--provider" && i+1 < len(args):
+			continue
+		case "--provider":
+			if i+1 >= len(args) {
+				return "", "", "", false, fmt.Errorf("--provider requires a value\n%s", analyzeUsage)
+			}
 			i++
 			providerName = args[i]
-		case path == "":
-			path = args[i]
-		default:
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			return "", "", "", false, fmt.Errorf("unknown option %q\n%s", arg, analyzeUsage)
+		}
+		if path != "" {
 			return "", "", "", false, fmt.Errorf(analyzeUsage)
 		}
+		path = arg
 	}
 	return path, fixturePath, providerName, yamlOutput, nil
 }

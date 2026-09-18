@@ -67,7 +67,7 @@ func validModelFor(t *testing.T, inv inventory.Inventory) model.BehavioralModel 
 				Description: "Run the deploy script",
 				Tools: []model.Claim{
 					{Value: "scripts/deploy.sh", Evidence: []model.EvidenceRef{
-						{Path: "scripts/deploy.sh", Digest: deployDigest, Note: "the deploy tool"},
+						{Path: "scripts/deploy.sh", Digest: deployDigest, Note: "echo deploy"},
 					}},
 				},
 				Evidence: []model.EvidenceRef{
@@ -235,6 +235,49 @@ func TestAnalyzeSurfacesConflictingInstructionsAsDecision(t *testing.T) {
 	}
 }
 
+// TestAnalyzeFailsClosedOnFabricatedQuote covers the review finding that a
+// provider could cite a real, unchanged path+digest while inventing a Note
+// text that doesn't actually appear in that file - model.Validate's
+// path/digest checks alone would pass this, since digest staleness isn't
+// what's wrong here.
+func TestAnalyzeFailsClosedOnFabricatedQuote(t *testing.T) {
+	inv := smallWorkspace(t)
+	m := validModelFor(t, inv)
+	m.Steps[0].Evidence[0].Note = "this text does not appear anywhere in CLAUDE.md"
+	m = withDigest(t, inv, m)
+	p := FixtureProvider{Response: toJSON(t, m)}
+
+	result, err := Analyze(context.Background(), p, inv)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if result.Report.Passed() {
+		t.Fatal("report.Passed() = true, want false for a fabricated quote")
+	}
+	assertErrorContains(t, result.Report.Errors, "possible fabricated quote")
+}
+
+// TestAnalyzeFailsClosedOnWrongLineQuote covers a quote that is real
+// somewhere in the file but not on the Line the evidence claims - path,
+// digest, and text all individually check out, but the citation still
+// doesn't point where it says it does.
+func TestAnalyzeFailsClosedOnWrongLineQuote(t *testing.T) {
+	inv := smallWorkspace(t)
+	m := validModelFor(t, inv)
+	m.Steps[0].Evidence[0].Line = 1 // real quote is on line 3, not 1
+	m = withDigest(t, inv, m)
+	p := FixtureProvider{Response: toJSON(t, m)}
+
+	result, err := Analyze(context.Background(), p, inv)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if result.Report.Passed() {
+		t.Fatal("report.Passed() = true, want false for a quote on the wrong line")
+	}
+	assertErrorContains(t, result.Report.Errors, "does not match line 1")
+}
+
 func TestAnalyzeNotesLowConfidenceEvidence(t *testing.T) {
 	inv := smallWorkspace(t)
 	m := validModelFor(t, inv)
@@ -257,7 +300,7 @@ func TestAnalyzeNotesHighDecisionRatio(t *testing.T) {
 		m.Decisions = append(m.Decisions, model.Decision{
 			ID:          "decision-" + string(rune('a'+i)),
 			Description: "padding",
-			Evidence:    []model.EvidenceRef{{Path: "CLAUDE.md", Digest: claudeDigest, Note: "x"}},
+			Evidence:    []model.EvidenceRef{{Path: "CLAUDE.md", Digest: claudeDigest, Note: "Instructions"}},
 		})
 	}
 	p := FixtureProvider{Response: toJSON(t, m)}

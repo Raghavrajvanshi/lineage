@@ -839,6 +839,164 @@ func TestHasStateTrueAfterApply(t *testing.T) {
 	}
 }
 
+func TestDiagnoseStateCleanAfterApply(t *testing.T) {
+	root := t.TempDir()
+	pkg := buildTestPackage(t, "review-pack", "review")
+	claude, err := provider.Get("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(root, claude, []packages.Package{pkg}); err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := DiagnoseState(root, "claude")
+	if err != nil {
+		t.Fatalf("DiagnoseState() error = %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("DiagnoseState() = %v, want none right after Apply", missing)
+	}
+}
+
+func TestDiagnoseStateReportsSkillRemovedByHand(t *testing.T) {
+	root := t.TempDir()
+	pkg := buildTestPackage(t, "review-pack", "review")
+	claude, err := provider.Get("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(root, claude, []packages.Package{pkg}); err != nil {
+		t.Fatal(err)
+	}
+
+	staged := filepath.Join(root, claude.SkillsDir, "review-pack-review")
+	if err := os.RemoveAll(staged); err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := DiagnoseState(root, "claude")
+	if err != nil {
+		t.Fatalf("DiagnoseState() error = %v", err)
+	}
+	if len(missing) != 1 {
+		t.Fatalf("DiagnoseState() = %v, want exactly the one removed skill dir", missing)
+	}
+}
+
+func TestDiagnoseStateReportsSkillDirectoryReplacedByFile(t *testing.T) {
+	root := t.TempDir()
+	pkg := buildTestPackage(t, "review-pack", "review")
+	claude, err := provider.Get("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(root, claude, []packages.Package{pkg}); err != nil {
+		t.Fatal(err)
+	}
+
+	staged := filepath.Join(root, claude.SkillsDir, "review-pack-review")
+	if err := os.RemoveAll(staged); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("not a skill directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := DiagnoseState(root, "claude")
+	if err != nil {
+		t.Fatalf("DiagnoseState() error = %v", err)
+	}
+	if len(missing) != 1 || missing[0] != filepath.Join(claude.SkillsDir, "review-pack-review") {
+		t.Fatalf("DiagnoseState() = %v, want the replaced skill directory", missing)
+	}
+}
+
+func TestDiagnoseStateReportsSkillDirectoryReplacedBySymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks may require elevated privileges on Windows")
+	}
+	root := t.TempDir()
+	pkg := buildTestPackage(t, "review-pack", "review")
+	claude, err := provider.Get("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(root, claude, []packages.Package{pkg}); err != nil {
+		t.Fatal(err)
+	}
+
+	staged := filepath.Join(root, claude.SkillsDir, "review-pack-review")
+	if err := os.RemoveAll(staged); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), staged); err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := DiagnoseState(root, "claude")
+	if err != nil {
+		t.Fatalf("DiagnoseState() error = %v", err)
+	}
+	if len(missing) != 1 {
+		t.Fatalf("DiagnoseState() = %v, want the symlinked skill directory", missing)
+	}
+}
+
+func TestDiagnoseStateReportsTraversalSkillDirEntry(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(parent, "outside", ".claude", "skills", "evil")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rel := filepath.Join("..", "outside", ".claude", "skills", "evil")
+	if err := saveState(root, "claude", state{Schema: currentStateSchema, SkillDirs: []string{rel}}); err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := DiagnoseState(root, "claude")
+	if err != nil {
+		t.Fatalf("DiagnoseState() error = %v", err)
+	}
+	if len(missing) != 1 || missing[0] != rel {
+		t.Fatalf("DiagnoseState() = %v, want the traversal skill dir entry", missing)
+	}
+}
+
+func TestDiagnoseStateReportsAbsoluteSkillDirEntry(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), ".claude", "skills", "evil")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveState(root, "claude", state{Schema: currentStateSchema, SkillDirs: []string{outside}}); err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := DiagnoseState(root, "claude")
+	if err != nil {
+		t.Fatalf("DiagnoseState() error = %v", err)
+	}
+	if len(missing) != 1 || missing[0] != outside {
+		t.Fatalf("DiagnoseState() = %v, want the absolute skill dir entry", missing)
+	}
+}
+
+func TestDiagnoseStateBeforeApplyReportsNothing(t *testing.T) {
+	root := t.TempDir()
+	missing, err := DiagnoseState(root, "claude")
+	if err != nil {
+		t.Fatalf("DiagnoseState() error = %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("DiagnoseState() = %v, want none before any Apply call", missing)
+	}
+}
+
 func TestApplyWritesCurrentSchema(t *testing.T) {
 	root := t.TempDir()
 	pkg := buildTestPackage(t, "review-pack", "review")

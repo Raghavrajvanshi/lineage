@@ -271,6 +271,80 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+// StatePath returns where a provider's materialize state file lives for a
+// project, for callers (such as `lineage doctor`) that need to name it in
+// diagnostic output without reaching into package-private layout details.
+func StatePath(projectRoot, providerName string) string {
+	return statePath(projectRoot, providerName)
+}
+
+// DiagnoseState reports staleness in a provider's materialize state file:
+// skill directories it records as staged that no longer exist on disk (a
+// package was disabled or a skill removed by some means other than
+// Apply/ApplyWorkflow, e.g. the directory was deleted by hand). This file is
+// regenerable (docs/decisions/0015) - a non-empty result is a warning for
+// `lineage doctor` to surface with a suggested fix (re-run `lineage run`),
+// never a hard failure. Returns nil with no error if the provider was never
+// materialized (no state file yet) or every recorded skill dir is present.
+func DiagnoseState(projectRoot, providerName string) ([]string, error) {
+	s, err := loadState(projectRoot, providerName)
+	if err != nil {
+		return nil, err
+	}
+	var missing []string
+	for _, rel := range s.SkillDirs {
+		path, ok := recordedSkillDirPath(projectRoot, providerName, rel)
+		if !ok {
+			missing = append(missing, rel)
+			continue
+		}
+		info, statErr := os.Lstat(path)
+		if os.IsNotExist(statErr) {
+			missing = append(missing, rel)
+		} else if statErr != nil {
+			return nil, statErr
+		} else if !info.IsDir() {
+			// Apply always creates a real directory. A regular file or symlink
+			// at this path is not usable provider state and, in the symlink
+			// case, could make the provider discover content outside the project.
+			missing = append(missing, rel)
+		}
+	}
+	return missing, nil
+}
+
+func recordedSkillDirPath(projectRoot, providerName, rel string) (string, bool) {
+	adapter, err := provider.Get(providerName)
+	if err != nil {
+		return "", false
+	}
+	if rel == "" || filepath.IsAbs(rel) || filepath.Clean(rel) != rel {
+		return "", false
+	}
+	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+		if part == ".." {
+			return "", false
+		}
+	}
+	cleanSkillsDir := filepath.Clean(adapter.SkillsDir)
+	if cleanSkillsDir == "." || filepath.IsAbs(cleanSkillsDir) {
+		return "", false
+	}
+	if rel != cleanSkillsDir && !strings.HasPrefix(rel, cleanSkillsDir+string(os.PathSeparator)) {
+		return "", false
+	}
+	absRoot, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", false
+	}
+	path := filepath.Join(absRoot, rel)
+	contained, err := filepath.Rel(absRoot, path)
+	if err != nil || contained == ".." || strings.HasPrefix(contained, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	return path, true
+}
+
 func loadState(projectRoot, providerName string) (state, error) {
 	data, err := os.ReadFile(statePath(projectRoot, providerName))
 	if err != nil {

@@ -490,6 +490,7 @@ func runPackageValidate(dir string, yamlOutput bool, stdout, stderr io.Writer) e
 	fmt.Fprintf(stdout, "capabilities:\n")
 	fmt.Fprintf(stdout, "  filesystem.read: %s\n", listValue(report.Manifest.Capabilities.Filesystem.Read))
 	fmt.Fprintf(stdout, "  network: %s\n", listValue(report.Manifest.Capabilities.Network))
+	writeMCPDependencies(stdout, report.Manifest.Dependencies.MCP)
 	packages.WritePortabilityReport(stdout, packages.NewPortabilityReport(report))
 
 	printInstructionFindings(stdout, report.InstructionFindings)
@@ -1371,11 +1372,30 @@ func runInspect(args []string, home string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "agents: %s\n", listValue(pkg.Agents))
 	fmt.Fprintf(stdout, "policies: %s\n", listValue(pkg.Policies))
 	fmt.Fprintf(stdout, "requires.skills: %s\n", listValue(pkg.Manifest.Requires.Skills))
+	writeMCPDependencies(stdout, pkg.Manifest.Dependencies.MCP)
 	fmt.Fprintf(stdout, "capabilities:\n")
 	fmt.Fprintf(stdout, "  filesystem.read: %s\n", listValue(pkg.Manifest.Capabilities.Filesystem.Read))
 	fmt.Fprintf(stdout, "  network: %s\n", listValue(pkg.Manifest.Capabilities.Network))
 	printInstructionFindings(stdout, findings)
 	return nil
+}
+
+func writeMCPDependencies(stdout io.Writer, deps []packages.MCPDependency) {
+	fmt.Fprintln(stdout, "dependencies.mcp:")
+	if len(deps) == 0 {
+		fmt.Fprintln(stdout, "  none")
+		return
+	}
+	for _, dep := range deps {
+		fmt.Fprintf(stdout, "  - %s (%s", dep.Name, dep.Transport)
+		if dep.URL != "" {
+			fmt.Fprintf(stdout, ", %s", dep.URL)
+		}
+		if dep.Auth == "receiver" {
+			fmt.Fprint(stdout, ", receiver-provided authentication")
+		}
+		fmt.Fprintln(stdout, ")")
+	}
 }
 
 func runProvider(ctx context.Context, args []string, home string, stdin *bufio.Reader, stdout, stderr io.Writer) error {
@@ -1436,6 +1456,9 @@ func runProvider(ctx context.Context, args []string, home string, stdin *bufio.R
 	if err := materialize.Apply(plan.ProjectRoot, adapter, plan.Packages); err != nil {
 		fmt.Fprintln(stderr, err)
 		return err
+	}
+	if plan.ProviderPlan.MaterializeOnly {
+		return nil
 	}
 
 	if err := provider.Launch(plan.ProviderPlan); err != nil {
@@ -1521,6 +1544,9 @@ func runWorkflow(args []string, home string, stdin *bufio.Reader, stdout, stderr
 		fmt.Fprintln(stderr, err)
 		return err
 	}
+	if providerPlan.MaterializeOnly {
+		return nil
+	}
 
 	if err := provider.Launch(providerPlan); err != nil {
 		fmt.Fprintln(stderr, err)
@@ -1536,6 +1562,12 @@ func workflowPlanString(wf packages.Workflow, pkg packages.Package, providerName
 	fmt.Fprintf(&b, "package: %s@%s\n", pkg.Manifest.Name, pkg.Manifest.Version)
 	fmt.Fprintf(&b, "provider: %s\n", providerName)
 	fmt.Fprintf(&b, "real_binary: %s\n", emptyValue(providerPlan.Binary))
+	fmt.Fprintf(&b, "args: %s\n", strings.Join(providerPlan.Args, " "))
+	if providerPlan.MaterializeOnly {
+		fmt.Fprintf(&b, "launch: disabled (config/materialization only)\n")
+	} else {
+		fmt.Fprintf(&b, "launch: enabled\n")
+	}
 	fmt.Fprintf(&b, "steps:\n")
 	for i, step := range wf.Steps {
 		fmt.Fprintf(&b, "  %d. %s\n", i+1, step)
@@ -1583,11 +1615,16 @@ func runInstallShims(home string, stdout, stderr io.Writer) error {
 }
 
 // runDoctor sanity-checks a Lineage setup: project config validity, shim
-// PATH placement, and provider binary resolution. It fails (non-zero exit)
-// only for things that are actually broken (a project config that doesn't
-// parse, an enabled ref that no longer resolves); everything else that's
+// PATH placement, provider binary resolution, materialize state, the local
+// lineage graph, and snapshot-store integrity. It fails (non-zero exit)
+// only for things that are actually broken and not automatically
+// recoverable (a project config that doesn't parse, an enabled ref that no
+// longer resolves, a graph.json or snapshot manifest that's corrupt or
+// missing referenced content — docs/decisions/0015 classifies both as
+// authoritative, with no automatic regeneration); everything else that's
 // merely ambiguous-but-working (multiple provider binary candidates, a shim
-// directory not on PATH) is a warning, printed but not fatal.
+// directory not on PATH) or safely regenerable (stale materialize state) is
+// a warning, printed but not fatal.
 func runDoctor(home string, stdout, stderr io.Writer) error {
 	broken := false
 
@@ -1604,6 +1641,37 @@ func runDoctor(home string, stdout, stderr io.Writer) error {
 			broken = true
 		} else {
 			fmt.Fprintf(stdout, "enabled packages: OK (%d enabled)\n", len(found.Config.EnabledPackages))
+		}
+
+		for _, p := range provider.Known() {
+			hasState, err := materialize.HasState(found.Root, p.Name)
+			if err != nil {
+				fmt.Fprintf(stdout, "materialize state (%s): WARN - could not check %s: %v\n", p.Name, materialize.StatePath(found.Root, p.Name), err)
+				continue
+			}
+			if !hasState {
+				continue
+			}
+			missing, err := materialize.DiagnoseState(found.Root, p.Name)
+			if err != nil {
+				fmt.Fprintf(stdout, "materialize state (%s): WARN - %s is stale or unreadable (%v); run `lineage run %s` to regenerate it\n", p.Name, materialize.StatePath(found.Root, p.Name), err, p.Name)
+				continue
+			}
+			if len(missing) > 0 {
+				fmt.Fprintf(stdout, "materialize state (%s): WARN - references %d missing or invalid skill dir(s); run `lineage run %s` to regenerate it:\n", p.Name, len(missing), p.Name)
+				for _, rel := range missing {
+					fmt.Fprintf(stdout, "    %s\n", rel)
+				}
+				continue
+			}
+			fmt.Fprintf(stdout, "materialize state (%s): OK\n", p.Name)
+		}
+
+		if records, err := graph.Load(found.Root); err != nil {
+			fmt.Fprintf(stdout, "local lineage graph: FAIL - %v\n", err)
+			broken = true
+		} else {
+			fmt.Fprintf(stdout, "local lineage graph: OK (%d record(s))\n", len(records))
 		}
 	} else if errors.Is(err, config.ErrProjectConfigNotFound) {
 		fmt.Fprintln(stdout, "project config: not inside a Lineage project (skipping enabled-package checks)")
@@ -1645,6 +1713,32 @@ func runDoctor(home string, stdout, stderr io.Writer) error {
 		}
 	}
 
+	if manifestIDs, err := snapshot.AllManifestIDs(home); err != nil {
+		fmt.Fprintf(stdout, "snapshot store: FAIL - could not list snapshot manifests: %v\n", err)
+		broken = true
+	} else {
+		snapshotProblems := 0
+		for _, id := range manifestIDs {
+			m, err := snapshot.LoadManifest(home, id)
+			if err != nil {
+				fmt.Fprintf(stdout, "snapshot store: FAIL - manifest %s is unreadable or corrupt: %v\n", id, err)
+				snapshotProblems++
+				continue
+			}
+			for _, f := range m.Files {
+				if err := snapshot.VerifyObject(home, f.Object); err != nil {
+					fmt.Fprintf(stdout, "snapshot store: FAIL - manifest %s (%s@%s) references missing or corrupt object for %s: %v\n", id, m.Name, m.Version, f.Path, err)
+					snapshotProblems++
+				}
+			}
+		}
+		if snapshotProblems > 0 {
+			broken = true
+		} else {
+			fmt.Fprintf(stdout, "snapshot store: OK (%d manifest(s))\n", len(manifestIDs))
+		}
+	}
+
 	if broken {
 		err := fmt.Errorf("lineage doctor found problems that need fixing")
 		fmt.Fprintln(stderr, err)
@@ -1673,8 +1767,8 @@ func pathIndexOf(pathEntries []string, dir string) int {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, strings.TrimSpace(fmt.Sprintf(`
-Lineage - package a working agent setup, share it, and run it through your
-own Claude or Codex.
+Lineage - package a working agent setup, share it, and run it through a
+supported agent provider.
 
 Usage:
   lineage <command> [arguments]
@@ -1699,13 +1793,13 @@ Using a package:
   list                                    show enabled packages
   inspect <path-or-id> [--yaml]            show a package's contents
   graph list [--yaml]                      show what this project's state descends from
-  run <%s> [--dry-run] [--yes]  launch a provider with packages applied
+  run <%s> [--dry-run] [--yes]  apply packages and launch where supported
   workflow run <name> <%s>      run one declared workflow
 
 Setup:
   init user                               create the user package directory
   init workspace <name>                   create a shared workspace
-  install-shims                           put lineage in front of claude/codex on PATH
+  install-shims                           put lineage in front of launchable providers on PATH
   doctor                                  check config, PATH, and provider setup
 
   -h, --help                              show this help

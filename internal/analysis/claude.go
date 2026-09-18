@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/agentic-lineage/lineage/internal/inventory"
 	"github.com/agentic-lineage/lineage/internal/model"
@@ -44,6 +45,15 @@ const (
 	// semantic pass needs verbatim, and reading every large binary in a
 	// workspace into the prompt would be wasted cost for no signal.
 	maxSourceFileBytes = 256 << 10 // 256KB
+
+	// claudeRequestTimeout bounds a single Analyze call end to end,
+	// mirroring registryRequestTimeout in internal/packages/registry.go —
+	// the same fix for the same failure mode: http.DefaultClient's
+	// Timeout is zero (unbounded), and runAnalyze passes its command
+	// context straight through without adding a deadline of its own, so a
+	// hung or slow-drip response would otherwise block `lineage analyze`
+	// indefinitely.
+	claudeRequestTimeout = 60 * time.Second
 )
 
 // ClaudeProvider calls the Anthropic Messages API directly over HTTP.
@@ -55,8 +65,16 @@ const (
 type ClaudeProvider struct {
 	// APIKey overrides the ANTHROPIC_API_KEY environment variable when set.
 	APIKey string
-	// Client overrides http.DefaultClient when set, e.g. for a test double.
+	// Client overrides the bounded default client (see
+	// defaultClaudeClient) when set, e.g. for a test double.
 	Client *http.Client
+}
+
+// defaultClaudeClient is used whenever ClaudeProvider.Client is unset —
+// never http.DefaultClient directly, whose zero Timeout would let a single
+// Analyze call block indefinitely on a hung or slow-drip response.
+func defaultClaudeClient() *http.Client {
+	return &http.Client{Timeout: claudeRequestTimeout}
 }
 
 // analysisSystemPrompt constrains the model to emit exactly one
@@ -195,7 +213,7 @@ func (c ClaudeProvider) Analyze(ctx context.Context, inv inventory.Inventory) ([
 
 	client := c.Client
 	if client == nil {
-		client = http.DefaultClient
+		client = defaultClaudeClient()
 	}
 	resp, err := client.Do(req)
 	if err != nil {

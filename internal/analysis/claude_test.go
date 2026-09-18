@@ -124,6 +124,22 @@ func TestClaudeProviderRequestIncludesSourceInventoryDigest(t *testing.T) {
 	}
 }
 
+// TestDefaultClaudeClientHasBoundedTimeout covers the review finding that
+// ClaudeProvider fell back to http.DefaultClient (Timeout: 0, unbounded)
+// whenever no Client was injected, so a hung or slow-drip response could
+// block Analyze forever - runAnalyze passes its command context through
+// without adding a deadline of its own. Mirrors registryRequestTimeout in
+// internal/packages/registry.go, the same fix for the same failure mode.
+func TestDefaultClaudeClientHasBoundedTimeout(t *testing.T) {
+	client := defaultClaudeClient()
+	if client.Timeout != claudeRequestTimeout {
+		t.Fatalf("defaultClaudeClient().Timeout = %v, want %v", client.Timeout, claudeRequestTimeout)
+	}
+	if client.Timeout <= 0 {
+		t.Fatal("defaultClaudeClient().Timeout is unbounded, want a positive bound")
+	}
+}
+
 // TestBuildSourceExcerptsOmitsDriftedFile covers the review finding that
 // buildSourceExcerpts never re-hashed content against the digest
 // inventory.Discover recorded, so a file edited after discovery could

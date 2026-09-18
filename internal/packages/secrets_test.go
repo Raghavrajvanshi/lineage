@@ -63,6 +63,27 @@ func TestScanForSecretsFlagsGoogleAPIKey(t *testing.T) {
 	}
 }
 
+func TestScanForSecretsFlagsGoogleAPIKeyEndingInHyphen(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "gcp-hyphen-pack")
+	if err := InitPackage(root, "gcp-hyphen-pack"); err != nil {
+		t.Fatal(err)
+	}
+	// A key ending in `-` sits at a non-word/non-word boundary against
+	// trailing whitespace or end of input, which a trailing \b on the
+	// pattern would fail to match against. Split for the same reason as
+	// the other AIza fixtures.
+	fakeGoogleKey := "AIza" + strings.Repeat("A", 34) + "-"
+	mustWrite(t, filepath.Join(root, "references", "config.txt"), "google_api_key = "+fakeGoogleKey+"\n")
+
+	findings, err := ScanForSecrets(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFindingForPath(findings, filepath.ToSlash(filepath.Join("references", "config.txt"))) {
+		t.Fatalf("findings = %#v, want a finding for the Google API key ending in -", findings)
+	}
+}
+
 func TestScanForSecretsFlagsAWSKeyID(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "aws-pack")
 	if err := InitPackage(root, "aws-pack"); err != nil {

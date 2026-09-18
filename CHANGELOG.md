@@ -10,6 +10,13 @@ All notable changes to Lineage will be documented here.
   manifest references actually present under `~/.lineage/objects/` (both
   fatal, since neither is automatically recoverable) — per the
   regenerable-vs-authoritative classification in ADR 0015 (#200).
+### Added
+
+- Add a versioned, provider-neutral behavioral model for compiled workflows
+  (#103), built from the source-workspace inventory (#203): ordered steps
+  with evidence-linked claims for inputs, outputs, required skills, tools,
+  and references, plus setup needs, validation gates, and explicit
+  unresolved decisions. See ADR 0018.
 
 ## [1.1.1] - 2026-09-01
 

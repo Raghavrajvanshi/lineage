@@ -6,6 +6,7 @@
 package materialize
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,8 +38,9 @@ const currentStateSchema = 1
 // provider, so a later call can remove entries that are no longer desired
 // (a package got disabled, a skill got removed) instead of only ever adding.
 type state struct {
-	Schema    int      `json:"schema"`
-	SkillDirs []string `json:"skill_dirs"` // relative to project root, sorted
+	Schema      int                  `json:"schema"`
+	SkillDirs   []string             `json:"skill_dirs"` // relative to project root, sorted
+	ConfigState provider.ConfigState `json:"config_state,omitempty"`
 }
 
 func statePath(projectRoot, providerName string) string {
@@ -133,6 +135,12 @@ func apply(projectRoot string, adapter provider.Provider, pkgs []packages.Packag
 			if err := copyDir(s.copyFromDir, dest); err != nil {
 				return fmt.Errorf("stage skill into %s: %w", s.finalRel, err)
 			}
+			if s.hasRenderedSkill {
+				skillPath := filepath.Join(dest, "SKILL.md")
+				if err := atomicfile.WriteFile(skillPath, s.renderedSkillContent, 0o644); err != nil {
+					return fmt.Errorf("write rendered skill %s: %w", s.finalRel, err)
+				}
+			}
 		} else if err := atomicfile.WriteFile(dest, s.renderedContent, 0o644); err != nil {
 			return fmt.Errorf("stage skill into %s: %w", s.finalRel, err)
 		}
@@ -143,8 +151,25 @@ func apply(projectRoot string, adapter provider.Provider, pkgs []packages.Packag
 	if err := writeSummary(filepath.Join(projectRoot, adapter.ContextFile), adapter.ContextPreamble, pkgs, wf); err != nil {
 		return fmt.Errorf("update %s: %w", adapter.ContextFile, err)
 	}
+	configState := prev.ConfigState
+	if adapter.Config != nil {
+		if len(pkgs) == 0 {
+			if err := adapter.Config.Remove(projectRoot, prev.ConfigState); err != nil {
+				return err
+			}
+			configState = provider.ConfigState{}
+		} else {
+			current, err := adapter.Config.Ensure(projectRoot)
+			if err != nil {
+				return err
+			}
+			if len(current.Managed) > 0 {
+				configState = current
+			}
+		}
+	}
 
-	return saveState(projectRoot, adapter.Name, state{Schema: currentStateSchema, SkillDirs: written})
+	return saveState(projectRoot, adapter.Name, state{Schema: currentStateSchema, SkillDirs: written, ConfigState: configState})
 }
 
 // NeedsApproval reports whether calling Apply with pkgs would change
@@ -176,7 +201,14 @@ func NeedsApproval(projectRoot string, adapter provider.Provider, pkgs []package
 	prevDirs := append([]string(nil), prev.SkillDirs...)
 	sort.Strings(prevDirs)
 
-	return !equalStrings(desiredDirs, prevDirs), nil
+	configNeedsApproval := false
+	if adapter.Config != nil {
+		configNeedsApproval, err = adapter.Config.NeedsApproval(projectRoot, prev.ConfigState, len(pkgs) > 0)
+		if err != nil {
+			return false, err
+		}
+	}
+	return !equalStrings(desiredDirs, prevDirs) || configNeedsApproval, nil
 }
 
 // NeedsApprovalForWorkflow is NeedsApproval scoped to a single workflow's
@@ -234,9 +266,11 @@ func desiredSkillDirs(adapter provider.Provider, pkgs []packages.Package) (map[s
 // that will exist on disk — which, for a provider with RenderSkill set,
 // is not the same string as desiredSkillDirs' map key (see stageSkills).
 type stagedSkill struct {
-	finalRel        string
-	copyFromDir     string
-	renderedContent []byte
+	finalRel             string
+	copyFromDir          string
+	renderedContent      []byte
+	renderedSkillContent []byte
+	hasRenderedSkill     bool
 }
 
 // stageSkills resolves every entry in desired to its final on-disk path
@@ -249,22 +283,40 @@ type stagedSkill struct {
 func stageSkills(adapter provider.Provider, desired map[string]skillSource) ([]stagedSkill, error) {
 	staged := make([]stagedSkill, 0, len(desired))
 	for rel, src := range desired {
-		if adapter.RenderSkill == nil {
-			staged = append(staged, stagedSkill{finalRel: rel, copyFromDir: src.dir})
+		if adapter.RendersSkillFile() {
+			files, err := readSkillFiles(src.dir)
+			if err != nil {
+				return nil, fmt.Errorf("read skill %s: %w", rel, err)
+			}
+			filename, content, ok, err := adapter.RenderSkillFile(src.pkgName, src.skillName, files)
+			if err != nil {
+				return nil, fmt.Errorf("render skill %s for %s: %w", rel, adapter.Name, err)
+			}
+			if !ok {
+				return nil, fmt.Errorf("render skill %s for %s: missing skill file renderer", rel, adapter.Name)
+			}
+			staged = append(staged, stagedSkill{
+				finalRel:        filepath.Join(filepath.Dir(rel), filename),
+				renderedContent: content,
+			})
 			continue
 		}
-		files, err := readSkillFiles(src.dir)
+
+		sourcePath := filepath.Join(src.dir, "SKILL.md")
+		source, err := os.ReadFile(sourcePath)
 		if err != nil {
-			return nil, fmt.Errorf("read skill %s: %w", rel, err)
+			return nil, fmt.Errorf("read source skill %s: %w", rel, err)
 		}
-		filename, content, err := adapter.RenderSkill(src.pkgName, src.skillName, files)
+		rendered, err := adapter.RenderSkill(filepath.Base(rel), source)
 		if err != nil {
 			return nil, fmt.Errorf("render skill %s for %s: %w", rel, adapter.Name, err)
 		}
-		staged = append(staged, stagedSkill{
-			finalRel:        filepath.Join(filepath.Dir(rel), filename),
-			renderedContent: content,
-		})
+		s := stagedSkill{finalRel: rel, copyFromDir: src.dir}
+		if !bytes.Equal(source, rendered) {
+			s.renderedSkillContent = rendered
+			s.hasRenderedSkill = true
+		}
+		staged = append(staged, s)
 	}
 	return staged, nil
 }
@@ -311,6 +363,87 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+// StatePath returns where a provider's materialize state file lives for a
+// project, for callers (such as `lineage doctor`) that need to name it in
+// diagnostic output without reaching into package-private layout details.
+func StatePath(projectRoot, providerName string) string {
+	return statePath(projectRoot, providerName)
+}
+
+// DiagnoseState reports staleness in a provider's materialize state file:
+// skill entries it records as staged that no longer exist on disk (a
+// package was disabled or a skill removed by some means other than
+// Apply/ApplyWorkflow, e.g. the directory was deleted by hand). This file is
+// regenerable (docs/decisions/0015) - a non-empty result is a warning for
+// `lineage doctor` to surface with a suggested fix (re-run `lineage run`),
+// never a hard failure. Returns nil with no error if the provider was never
+// materialized (no state file yet) or every recorded skill dir is present.
+func DiagnoseState(projectRoot, providerName string) ([]string, error) {
+	s, err := loadState(projectRoot, providerName)
+	if err != nil {
+		return nil, err
+	}
+	adapter, err := provider.Get(providerName)
+	if err != nil {
+		return nil, err
+	}
+	var missing []string
+	for _, rel := range s.SkillDirs {
+		path, ok := recordedSkillDirPath(projectRoot, providerName, rel)
+		if !ok {
+			missing = append(missing, rel)
+			continue
+		}
+		info, statErr := os.Lstat(path)
+		if os.IsNotExist(statErr) {
+			missing = append(missing, rel)
+		} else if statErr != nil {
+			return nil, statErr
+		} else if adapter.RendersSkillFile() && !info.Mode().IsRegular() {
+			missing = append(missing, rel)
+		} else if !adapter.RendersSkillFile() && !info.IsDir() {
+			// Directory-copy providers always create real directories. A
+			// regular file or symlink at this path is not usable provider state
+			// and, in the symlink case, could make the provider discover content
+			// outside the project.
+			missing = append(missing, rel)
+		}
+	}
+	return missing, nil
+}
+
+func recordedSkillDirPath(projectRoot, providerName, rel string) (string, bool) {
+	adapter, err := provider.Get(providerName)
+	if err != nil {
+		return "", false
+	}
+	if rel == "" || filepath.IsAbs(rel) || filepath.Clean(rel) != rel {
+		return "", false
+	}
+	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+		if part == ".." {
+			return "", false
+		}
+	}
+	cleanSkillsDir := filepath.Clean(adapter.SkillsDir)
+	if cleanSkillsDir == "." || filepath.IsAbs(cleanSkillsDir) {
+		return "", false
+	}
+	if rel != cleanSkillsDir && !strings.HasPrefix(rel, cleanSkillsDir+string(os.PathSeparator)) {
+		return "", false
+	}
+	absRoot, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", false
+	}
+	path := filepath.Join(absRoot, rel)
+	contained, err := filepath.Rel(absRoot, path)
+	if err != nil || contained == ".." || strings.HasPrefix(contained, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	return path, true
+}
+
 func loadState(projectRoot, providerName string) (state, error) {
 	data, err := os.ReadFile(statePath(projectRoot, providerName))
 	if err != nil {
@@ -323,10 +456,16 @@ func loadState(projectRoot, providerName string) (state, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return state{}, fmt.Errorf("parse %s: %w", statePath(projectRoot, providerName), err)
 	}
-	// schema 0 means the state predates the schema field; treat that as
-	// schema 1, the only schema that ever existed before it was added -
-	// same rule config.LoadProjectConfig uses for config.yaml's schema field.
-	if s.Schema == 0 {
+	// An absent schema field and an explicit `"schema": 0` both decode to
+	// zero. Probe the field as a pointer so only the absent legacy field
+	// defaults to schema 1; explicit zero remains unsupported.
+	var probe struct {
+		Schema *int `json:"schema"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return state{}, fmt.Errorf("parse %s: %w", statePath(projectRoot, providerName), err)
+	}
+	if probe.Schema == nil {
 		s.Schema = currentStateSchema
 	}
 	if s.Schema != currentStateSchema {

@@ -32,6 +32,12 @@ type cursorRuleFrontmatter struct {
 	AlwaysApply bool   `yaml:"alwaysApply"`
 }
 
+type cursorSkillRenderer struct{}
+
+func (cursorSkillRenderer) RenderFile(pkgName, skillName string, files map[string][]byte) (string, []byte, error) {
+	return cursorRenderSkill(pkgName, skillName, files)
+}
+
 // cursorRenderSkill turns one staged skill into a Cursor rule file:
 // <pkg>-<skill>.mdc, with frontmatter carrying the skill's own
 // description (every SKILL.md already declares one - see the guardrail

@@ -13,31 +13,38 @@ import (
 // entry to registry below — no other package (internal/runtime,
 // internal/packages, internal/cli) should ever special-case a provider
 // name. Providers sit on top of the provider-neutral core, not inside it.
-//
-// RenderSkill and ContextPreamble are optional escape hatches for a
-// provider whose native format genuinely can't represent a verbatim
-// SKILL.md copy (see docs/decisions/0007-providers-are-a-single-registry-entry.md's
-// follow-up on when the registry-entry-only boundary is expected to
-// leak). Leaving both nil/empty, as claude and codex do, reproduces
-// today's behavior exactly.
 type Provider struct {
-	Name        string
-	SkillsDir   string
-	ContextFile string
-
-	// RenderSkill, if set, replaces materialize.Apply's default verbatim
-	// directory copy for this provider's skills: it's called once per
-	// enabled skill with that skill's staged files, and must return the
-	// single file (name and content) to write into SkillsDir instead.
-	RenderSkill func(pkgName, skillName string, files map[string][]byte) (filename string, content []byte, err error)
+	Name            string
+	SkillsDir       string
+	ContextFile     string
+	MaterializeOnly bool
+	Config          ConfigAdapter
+	renderer        SkillRenderer
+	fileRenderer    SkillFileRenderer
 
 	// ContextPreamble, if set, is written once before the
 	// lineage:begin/lineage:end marker block the first time ContextFile
-	// is created. Later calls never re-add it: replaceBlock only ever
-	// touches the marked region, so whatever precedes it (this preamble)
-	// survives every subsequent Apply the same way hand-written content
-	// above the markers already does for claude/codex.
+	// is created. Later calls never re-add it: replaceBlock only touches
+	// the marked region, so hand-written content above the markers survives.
 	ContextPreamble string
+}
+
+// ConfigState records a provider-specific project configuration edit so the
+// materializer can reverse only the content it added. Adapters own the file
+// syntax; the core only persists and passes this state through.
+type ConfigState struct {
+	FileExisted bool     `json:"file_existed"`
+	CreatedFile bool     `json:"created_file"`
+	Original    []string `json:"original,omitempty"`
+	Managed     []string `json:"managed,omitempty"`
+}
+
+// ConfigAdapter describes optional project-scoped configuration that connects
+// a provider's generated context file to its native configuration.
+type ConfigAdapter interface {
+	Ensure(projectRoot string) (ConfigState, error)
+	Remove(projectRoot string, state ConfigState) error
+	NeedsApproval(projectRoot string, state ConfigState, desired bool) (bool, error)
 }
 
 var registry = []Provider{
@@ -47,9 +54,13 @@ var registry = []Provider{
 		Name:            "cursor",
 		SkillsDir:       filepath.Join(".cursor", "rules"),
 		ContextFile:     filepath.Join(".cursor", "rules", "lineage.mdc"),
-		RenderSkill:     cursorRenderSkill,
+		fileRenderer:    cursorSkillRenderer{},
 		ContextPreamble: cursorContextPreamble,
 	},
+	{Name: "auggie", SkillsDir: filepath.Join(".augment", "skills"), ContextFile: "AGENTS.md", renderer: auggieSkillRenderer{}},
+	{Name: "windsurf", SkillsDir: filepath.Join(".windsurf", "rules"), ContextFile: ".windsurfrules", MaterializeOnly: true},
+	{Name: "aider", SkillsDir: filepath.Join(".aider", "skills"), ContextFile: "CONVENTIONS.md", Config: AiderConfigAdapter{}},
+	{Name: "cline", SkillsDir: ".clinerules", ContextFile: filepath.Join(".clinerules", "lineage.md"), MaterializeOnly: true},
 }
 
 // Known returns every registered provider, in registration order.

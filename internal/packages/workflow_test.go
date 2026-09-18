@@ -2,6 +2,7 @@ package packages
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -146,5 +147,33 @@ func TestFindWorkflowRejectsBrokenStepReference(t *testing.T) {
 
 	if _, _, err := FindWorkflow([]Package{pkg}, "review"); err == nil {
 		t.Fatal("FindWorkflow() error = nil, want error for a step referencing a nonexistent skill")
+	}
+}
+
+func TestSaveWorkflowRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	want := Workflow{Name: "release", Steps: []string{"lint", "notify", "deploy"}}
+	if err := SaveWorkflow(dir, want, "# Release\n\nBody with --- inside.\n---\nmore\n"); err != nil {
+		t.Fatalf("SaveWorkflow: %v", err)
+	}
+	got, err := LoadWorkflow(dir, "release")
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+}
+
+func TestSaveWorkflowRejectsUnsafeNames(t *testing.T) {
+	for _, wf := range []Workflow{
+		{Name: "../evil", Steps: []string{"a"}},
+		{Name: "ok", Steps: []string{"a/b"}},
+		{Name: "ok", Steps: []string{".hidden"}},
+		{Name: "", Steps: nil},
+	} {
+		if err := SaveWorkflow(t.TempDir(), wf, ""); err == nil {
+			t.Errorf("SaveWorkflow(%+v) error = nil, want error", wf)
+		}
 	}
 }

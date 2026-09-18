@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -10,21 +11,24 @@ import (
 
 	"github.com/agentic-lineage/lineage/internal/analysis"
 	"github.com/agentic-lineage/lineage/internal/inventory"
+	"github.com/agentic-lineage/lineage/internal/model"
 )
 
-const analyzeUsage = "usage: lineage analyze <path> [--provider claude] [--fixture file] [--yaml]"
+const analyzeUsage = "usage: lineage analyze <path> [--provider claude] [--fixture file] [--yaml] [--model-out file]"
 
 // runAnalyze is `lineage analyze <path>`: discover the source workspace's
 // inventory, hand it to a Provider (Claude by default), and validate what
 // comes back - the CLI entry point for #104's agent-assisted analysis
-// stage. Dry-run only: it never writes package artifacts (that's #106).
+// stage. It never writes package artifacts: --model-out saves the full
+// BehavioralModel for `lineage compile` to consume, and compile is what
+// generates the package.
 func runAnalyze(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if hasHelpFlag(args) {
-		fmt.Fprintln(stdout, analyzeUsage+"\n\nRun agent-assisted analysis over a source workspace: discover its inventory, ask a provider to infer a BehavioralModel grounded in that evidence, and validate the result. Dry-run only - never writes package artifacts. --fixture reads a canned raw provider response from a file instead of calling a live provider, for use without credentials.")
+		fmt.Fprintln(stdout, analyzeUsage+"\n\nRun agent-assisted analysis over a source workspace: discover its inventory, ask a provider to infer a BehavioralModel grounded in that evidence, and validate the result. Never writes package artifacts. --model-out saves the full behavioral model as indented JSON so an author can review or edit it and then run `lineage compile`. --fixture reads a canned raw provider response from a file instead of calling a live provider, for use without credentials.")
 		return nil
 	}
 
-	path, fixturePath, providerName, yamlOutput, err := parseAnalyzeArgs(args)
+	path, fixturePath, providerName, modelOut, yamlOutput, err := parseAnalyzeArgs(args)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return err
@@ -68,6 +72,27 @@ func runAnalyze(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		fmt.Fprintln(stderr, err)
 		return err
 	}
+	if modelOut != "" {
+		if err := writeModelFile(modelOut, result.Model); err != nil {
+			fmt.Fprintln(stderr, err)
+			return err
+		}
+	}
+	return nil
+}
+
+// writeModelFile saves m as indented JSON, the format model.ParseModel reads.
+// Only a model that passed validation is ever written, so a saved file never
+// holds a model that compile would have to reject for schema or evidence
+// reasons it could have been told about here.
+func writeModelFile(path string, m model.BehavioralModel) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode behavioral model: %w", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write behavioral model: %w", err)
+	}
 	return nil
 }
 
@@ -78,7 +103,7 @@ func runAnalyze(ctx context.Context, args []string, stdout, stderr io.Writer) er
 // --fixture" must not silently run against a workspace literally named
 // "--fixture". Any other argument starting with "-" is rejected outright
 // rather than being treated as a path, for the same reason.
-func parseAnalyzeArgs(args []string) (path, fixturePath, providerName string, yamlOutput bool, err error) {
+func parseAnalyzeArgs(args []string) (path, fixturePath, providerName, modelOut string, yamlOutput bool, err error) {
 	providerName = "claude"
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -88,28 +113,35 @@ func parseAnalyzeArgs(args []string) (path, fixturePath, providerName string, ya
 			continue
 		case "--fixture":
 			if i+1 >= len(args) {
-				return "", "", "", false, fmt.Errorf("--fixture requires a value\n%s", analyzeUsage)
+				return "", "", "", "", false, fmt.Errorf("--fixture requires a value\n%s", analyzeUsage)
 			}
 			i++
 			fixturePath = args[i]
 			continue
+		case "--model-out":
+			if i+1 >= len(args) {
+				return "", "", "", "", false, fmt.Errorf("--model-out requires a value\n%s", analyzeUsage)
+			}
+			i++
+			modelOut = args[i]
+			continue
 		case "--provider":
 			if i+1 >= len(args) {
-				return "", "", "", false, fmt.Errorf("--provider requires a value\n%s", analyzeUsage)
+				return "", "", "", "", false, fmt.Errorf("--provider requires a value\n%s", analyzeUsage)
 			}
 			i++
 			providerName = args[i]
 			continue
 		}
 		if strings.HasPrefix(arg, "-") {
-			return "", "", "", false, fmt.Errorf("unknown option %q\n%s", arg, analyzeUsage)
+			return "", "", "", "", false, fmt.Errorf("unknown option %q\n%s", arg, analyzeUsage)
 		}
 		if path != "" {
-			return "", "", "", false, fmt.Errorf(analyzeUsage)
+			return "", "", "", "", false, fmt.Errorf(analyzeUsage)
 		}
 		path = arg
 	}
-	return path, fixturePath, providerName, yamlOutput, nil
+	return path, fixturePath, providerName, modelOut, yamlOutput, nil
 }
 
 // resolveAnalysisProvider picks the analysis.Provider for this run.

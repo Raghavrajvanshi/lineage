@@ -79,6 +79,55 @@ func TestReadObjectRoundTrips(t *testing.T) {
 	}
 }
 
+func TestInspectWeightSeparatesLogicalWeightFromLocalCAS(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "weight-pack")
+	if err := packages.InitPackage(dir, "weight-pack"); err != nil {
+		t.Fatal(err)
+	}
+	// These two assets deliberately share an object. Logical package weight
+	// counts both paths, while local CAS accounting counts their body once.
+	mustWrite(t, filepath.Join(dir, "skills", "one", "SKILL.md"), "same")
+	mustWrite(t, filepath.Join(dir, "skills", "two", "SKILL.md"), "same")
+	mustWrite(t, filepath.Join(dir, "references", "diagram.bin"), "\x00\x01")
+	manifest, err := BuildContentManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	for _, asset := range manifest.Assets {
+		if asset.Path == "skills/one/SKILL.md" {
+			if _, err := WriteObject(home, []byte("same")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	report, err := InspectWeight(home, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Estimator.Name != "bytes-per-token" || report.Estimator.Version != "v1" || report.Estimator.Exact {
+		t.Errorf("Estimator = %+v, want named non-exact v1 estimator", report.Estimator)
+	}
+	if report.StoredBytes <= report.LocalStorage.VerifiedBytes {
+		t.Errorf("logical stored bytes %d, want greater than deduplicated verified bytes %d", report.StoredBytes, report.LocalStorage.VerifiedBytes)
+	}
+	if report.Stub.Bytes == 0 || !report.Stub.Context.Available || report.Stub.Context.Tokens == 0 {
+		t.Errorf("stub = %+v, want exact bytes and a deterministic estimate", report.Stub)
+	}
+	var binary AssetWeight
+	for _, asset := range report.Assets {
+		if asset.Path == "references/diagram.bin" {
+			binary = asset
+		}
+	}
+	if binary.Context.Available || binary.Context.Reason == "" {
+		t.Errorf("binary context = %+v, want explicit unavailable estimate", binary.Context)
+	}
+	if report.FullBody.Context.Available {
+		t.Errorf("full body context = %+v, want unavailable when it includes a binary asset", report.FullBody.Context)
+	}
+}
+
 func TestReadObjectDetectsCorruption(t *testing.T) {
 	home := t.TempDir()
 

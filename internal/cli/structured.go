@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/agentic-lineage/lineage/internal/packages"
+	"github.com/agentic-lineage/lineage/internal/snapshot"
 	"gopkg.in/yaml.v3"
 )
 
@@ -18,23 +19,24 @@ import (
 // fails to discover cleanly; inspect has no pass/fail result) rather than
 // given a placeholder value that would look like real data.
 type PackageReport struct {
-	Name           string                      `yaml:"name"`
-	Version        string                      `yaml:"version"`
-	Schema         int                         `yaml:"schema"`
-	Path           string                      `yaml:"path,omitempty"`
-	Digest         string                      `yaml:"digest,omitempty"`
-	Description    string                      `yaml:"description,omitempty"`
-	Skills         []string                    `yaml:"skills,omitempty"`
-	Workflows      []string                    `yaml:"workflows,omitempty"`
-	Agents         []string                    `yaml:"agents,omitempty"`
-	Policies       []string                    `yaml:"policies,omitempty"`
-	RequiredSkills []string                    `yaml:"required_skills"`
-	MCPDependencies []packages.MCPDependency   `yaml:"mcp_dependencies"`
-	Providers      []string                    `yaml:"providers"`
-	Capabilities   PackageReportCapabilities   `yaml:"capabilities"`
-	Portability    *packages.PortabilityReport `yaml:"portability,omitempty"`
-	Notes          []string                    `yaml:"notes,omitempty"`
-	Errors         []string                    `yaml:"errors,omitempty"`
+	Name            string                      `yaml:"name"`
+	Version         string                      `yaml:"version"`
+	Schema          int                         `yaml:"schema"`
+	Path            string                      `yaml:"path,omitempty"`
+	Digest          string                      `yaml:"digest,omitempty"`
+	Description     string                      `yaml:"description,omitempty"`
+	Skills          []string                    `yaml:"skills,omitempty"`
+	Workflows       []string                    `yaml:"workflows,omitempty"`
+	Agents          []string                    `yaml:"agents,omitempty"`
+	Policies        []string                    `yaml:"policies,omitempty"`
+	RequiredSkills  []string                    `yaml:"required_skills"`
+	MCPDependencies []packages.MCPDependency    `yaml:"mcp_dependencies"`
+	Providers       []string                    `yaml:"providers"`
+	Capabilities    PackageReportCapabilities   `yaml:"capabilities"`
+	Portability     *packages.PortabilityReport `yaml:"portability,omitempty"`
+	Weight          *snapshot.WeightReport      `yaml:"weight,omitempty"`
+	Notes           []string                    `yaml:"notes,omitempty"`
+	Errors          []string                    `yaml:"errors,omitempty"`
 	// InstructionFindings are ScanForInstructionRisk's results, computed
 	// for both validate and inspect (unlike Result, which stays
 	// validate-only - a finding is worth showing to a receiver deciding
@@ -93,26 +95,27 @@ func nonNil(values []string) []string {
 	return values
 }
 
-func inspectReport(pkg packages.Package, findings []packages.InstructionFinding) PackageReport {
+func inspectReport(pkg packages.Package, findings []packages.InstructionFinding, weight snapshot.WeightReport) PackageReport {
 	return PackageReport{
-		Name:           pkg.Manifest.Name,
-		Version:        pkg.Manifest.Version,
-		Schema:         pkg.Manifest.Schema,
-		Path:           pkg.Path,
-		Digest:         pkg.Digest,
-		Description:    pkg.Manifest.Description,
-		Skills:         nonNil(pkg.Skills),
-		Workflows:      nonNil(pkg.Workflows),
-		Agents:         nonNil(pkg.Agents),
-		Policies:       nonNil(pkg.Policies),
-		RequiredSkills: nonNil(pkg.Manifest.Requires.Skills),
+		Name:            pkg.Manifest.Name,
+		Version:         pkg.Manifest.Version,
+		Schema:          pkg.Manifest.Schema,
+		Path:            pkg.Path,
+		Digest:          pkg.Digest,
+		Description:     pkg.Manifest.Description,
+		Skills:          nonNil(pkg.Skills),
+		Workflows:       nonNil(pkg.Workflows),
+		Agents:          nonNil(pkg.Agents),
+		Policies:        nonNil(pkg.Policies),
+		RequiredSkills:  nonNil(pkg.Manifest.Requires.Skills),
 		MCPDependencies: nonNilMCP(pkg.Manifest.Dependencies.MCP),
-		Providers:      nonNil(pkg.Manifest.Entrypoints.Providers()),
+		Providers:       nonNil(pkg.Manifest.Entrypoints.Providers()),
 		Capabilities: PackageReportCapabilities{
 			FilesystemRead: nonNil(pkg.Manifest.Capabilities.Filesystem.Read),
 			Network:        nonNil(pkg.Manifest.Capabilities.Network),
 		},
 		InstructionFindings: toInstructionRiskReports(findings),
+		Weight:              &weight,
 	}
 }
 
@@ -129,13 +132,13 @@ func validateReport(report packages.ValidateReport, discovered *packages.Package
 		result = "fail"
 	}
 	pr := PackageReport{
-		Name:           report.Manifest.Name,
-		Version:        report.Manifest.Version,
-		Schema:         report.Manifest.Schema,
-		Digest:         report.Digest,
-		RequiredSkills: nonNil(report.Manifest.Requires.Skills),
+		Name:            report.Manifest.Name,
+		Version:         report.Manifest.Version,
+		Schema:          report.Manifest.Schema,
+		Digest:          report.Digest,
+		RequiredSkills:  nonNil(report.Manifest.Requires.Skills),
 		MCPDependencies: nonNilMCP(report.Manifest.Dependencies.MCP),
-		Providers:      nonNil(report.Manifest.Entrypoints.Providers()),
+		Providers:       nonNil(report.Manifest.Entrypoints.Providers()),
 		Capabilities: PackageReportCapabilities{
 			FilesystemRead: nonNil(report.Manifest.Capabilities.Filesystem.Read),
 			Network:        nonNil(report.Manifest.Capabilities.Network),

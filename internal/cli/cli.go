@@ -1364,9 +1364,19 @@ func runInspect(args []string, home string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stderr, err)
 		return err
 	}
+	contentManifest, err := snapshot.BuildContentManifest(pkg.Path)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return err
+	}
+	weight, err := snapshot.InspectWeight(home, contentManifest)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return err
+	}
 
 	if yamlOutput {
-		return writeYAML(stdout, inspectReport(pkg, findings))
+		return writeYAML(stdout, inspectReport(pkg, findings, weight))
 	}
 
 	fmt.Fprintf(stdout, "package: %s@%s (schema %d)\n", pkg.Manifest.Name, pkg.Manifest.Version, pkg.Manifest.Schema)
@@ -1384,8 +1394,32 @@ func runInspect(args []string, home string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "capabilities:\n")
 	fmt.Fprintf(stdout, "  filesystem.read: %s\n", listValue(pkg.Manifest.Capabilities.Filesystem.Read))
 	fmt.Fprintf(stdout, "  network: %s\n", listValue(pkg.Manifest.Capabilities.Network))
+	writeWeightReport(stdout, weight)
 	printInstructionFindings(stdout, findings)
 	return nil
+}
+
+// writeWeightReport presents exact byte totals separately from the generic
+// context estimate, whose identity makes its approximate nature visible.
+func writeWeightReport(stdout io.Writer, report snapshot.WeightReport) {
+	fmt.Fprintln(stdout, "weight:")
+	fmt.Fprintf(stdout, "  stored_bytes: %d\n", report.StoredBytes)
+	fmt.Fprintf(stdout, "  stub_bytes: %d\n", report.Stub.Bytes)
+	fmt.Fprintf(stdout, "  full_body_bytes: %d\n", report.FullBody.Bytes)
+	fmt.Fprintf(stdout, "  local_verified_bytes: %d\n", report.LocalStorage.VerifiedBytes)
+	fmt.Fprintf(stdout, "  local_missing_bytes: %d\n", report.LocalStorage.MissingBytes)
+	fmt.Fprintf(stdout, "  local_corrupt_bytes: %d\n", report.LocalStorage.CorruptBytes)
+	fmt.Fprintf(stdout, "  estimator: %s %s (estimated)\n", report.Estimator.Name, report.Estimator.Version)
+	writeContextEstimate(stdout, "stub_context_tokens", report.Stub.Context)
+	writeContextEstimate(stdout, "full_body_context_tokens", report.FullBody.Context)
+}
+
+func writeContextEstimate(stdout io.Writer, name string, estimate snapshot.ContextEstimate) {
+	if estimate.Available {
+		fmt.Fprintf(stdout, "  %s: ~%d\n", name, estimate.Tokens)
+		return
+	}
+	fmt.Fprintf(stdout, "  %s: unavailable (%s)\n", name, estimate.Reason)
 }
 
 func writeMCPDependencies(stdout io.Writer, deps []packages.MCPDependency) {

@@ -10,8 +10,8 @@ import (
 
 	"github.com/agentic-lineage/lineage/internal/config"
 	"github.com/agentic-lineage/lineage/internal/packages"
-	"github.com/agentic-lineage/lineage/internal/snapshot"
 	"github.com/agentic-lineage/lineage/internal/provider"
+	"github.com/agentic-lineage/lineage/internal/snapshot"
 )
 
 // noopProviderBinary returns the path to an OS-appropriate fake provider
@@ -701,6 +701,9 @@ func TestInspectShowsPackageWithoutEnabling(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "skills: review") {
 		t.Fatalf("inspect output = %q, want discovered skills", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "weight:") || !strings.Contains(stdout.String(), "estimator: bytes-per-token v1 (estimated)") {
+		t.Fatalf("inspect output = %q, want package weight diagnostics", stdout.String())
 	}
 
 	cfgPath := config.ProjectConfigPath(filepath.Dir(pkgDir))

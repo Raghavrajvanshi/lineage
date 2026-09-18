@@ -44,6 +44,16 @@ A package with any blocking error fails validation and refuses to export/publish
 
 `lineage inspect <ref>` resolves a package (project path, user id, or workspace id) and shows its manifest, discovered skills/workflows/agents/policies/references, content digest, and declared capabilities — without enabling or writing anything. This is the point in the lifecycle meant for a receiver to actually read what they're about to enable, before they type `lineage enable`.
 
+Inspection also reports exact content bytes per asset and in aggregate. Its
+context figures are explicitly marked estimates: the built-in
+`bytes-per-token v1` estimator uses a deterministic four-byte heuristic for
+text assets and reports non-text content as unavailable rather than zero.
+Those figures are a reproducible way to compare package surfaces, not a claim
+about any provider's runtime context use. The manifest-facing `lineage.yaml`
+is reported separately as stub weight; other assets make up the full-body
+weight. Local verified, missing, and corrupt CAS bytes are deduplicated by
+content digest and therefore intentionally differ from logical package bytes.
+
 ## What `publish`, `pull`, And `import` Protect
 
 - **Publish**: requires a logged-in identity (`lineage login`, or `LINEAGE_PUBLISH_TOKEN` for non-interactive use). The first publish of a name claims it; a later publish of the same name needs the same identity, so one publisher can't overwrite another's package.

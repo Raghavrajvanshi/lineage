@@ -278,6 +278,91 @@ func TestAnalyzeFailsClosedOnWrongLineQuote(t *testing.T) {
 	assertErrorContains(t, result.Report.Errors, "does not match line 1")
 }
 
+// TestAnalyzeFailsClosedOnFabricatedSetupQuote and
+// TestAnalyzeFailsClosedOnFabricatedGateQuote cover the review finding
+// that allEvidenceRefs walked step/claim/decision evidence but not
+// Step.Setup or Step.Gates, so a fabricated quote on either slipped past
+// verification even though model.Validate itself already checks their
+// path/digest metadata.
+func TestAnalyzeFailsClosedOnFabricatedSetupQuote(t *testing.T) {
+	inv := smallWorkspace(t)
+	m := validModelFor(t, inv)
+	claudeDigest := entryDigest(t, inv, "CLAUDE.md")
+	m.Steps[0].Setup = []model.SetupNeed{
+		{
+			Path: ".tracker",
+			Kind: "file",
+			Evidence: []model.EvidenceRef{
+				{Path: "CLAUDE.md", Digest: claudeDigest, Note: "this text is not in CLAUDE.md"},
+			},
+		},
+	}
+	m = withDigest(t, inv, m)
+	p := FixtureProvider{Response: toJSON(t, m)}
+
+	result, err := Analyze(context.Background(), p, inv)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if result.Report.Passed() {
+		t.Fatal("report.Passed() = true, want false for a fabricated setup-need quote")
+	}
+	assertErrorContains(t, result.Report.Errors, "possible fabricated quote")
+}
+
+func TestAnalyzeFailsClosedOnFabricatedGateQuote(t *testing.T) {
+	inv := smallWorkspace(t)
+	m := validModelFor(t, inv)
+	claudeDigest := entryDigest(t, inv, "CLAUDE.md")
+	m.Steps[0].Gates = []model.Gate{
+		{
+			ID: "gate-1",
+			Evidence: []model.EvidenceRef{
+				{Path: "CLAUDE.md", Digest: claudeDigest, Note: "this text is not in CLAUDE.md"},
+			},
+		},
+	}
+	m = withDigest(t, inv, m)
+	p := FixtureProvider{Response: toJSON(t, m)}
+
+	result, err := Analyze(context.Background(), p, inv)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if result.Report.Passed() {
+		t.Fatal("report.Passed() = true, want false for a fabricated gate quote")
+	}
+	assertErrorContains(t, result.Report.Errors, "possible fabricated quote")
+}
+
+// TestAnalyzeFailsClosedOnEvidenceDigestDrift covers the review finding
+// that verifyQuotedEvidence re-read a cited file's content without
+// checking it still matched the digest inventory.Discover recorded - a
+// file edited after discovery (even one that still contains the original
+// quoted line, just with more added) previously passed the naive
+// substring check.
+func TestAnalyzeFailsClosedOnEvidenceDigestDrift(t *testing.T) {
+	inv := smallWorkspace(t)
+	m := withDigest(t, inv, validModelFor(t, inv))
+	p := FixtureProvider{Response: toJSON(t, m)}
+
+	// Mutate CLAUDE.md on disk after inventory.Discover ran (inside
+	// smallWorkspace), keeping the original quoted line intact but adding
+	// conflicting content - the file's digest no longer matches what inv
+	// recorded.
+	claudePath := filepath.Join(inv.Root, "CLAUDE.md")
+	mustWrite(t, claudePath, "# Instructions\n\nRun scripts/deploy.sh to deploy.\n\nActually, run scripts/release.sh instead.\n")
+
+	result, err := Analyze(context.Background(), p, inv)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if result.Report.Passed() {
+		t.Fatal("report.Passed() = true, want false when a cited file has changed since discovery")
+	}
+	assertErrorContains(t, result.Report.Errors, "changed since inventory discovery")
+}
+
 func TestAnalyzeNotesLowConfidenceEvidence(t *testing.T) {
 	inv := smallWorkspace(t)
 	m := validModelFor(t, inv)

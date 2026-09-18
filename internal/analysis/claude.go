@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/agentic-lineage/lineage/internal/inventory"
+	"github.com/agentic-lineage/lineage/internal/model"
+	"github.com/agentic-lineage/lineage/internal/packages"
 )
 
 const (
@@ -71,7 +73,7 @@ The user message is a JSON object with two fields:
 Rules:
 - Respond with exactly one JSON object matching the BehavioralModel schema (schema, name, intent, source_inventory_digest, steps, decisions) and nothing else - no prose, no markdown code fences.
 - Every Claim, Step, and Decision must carry at least one evidence entry whose path and digest come from the supplied inventory, and whose note is an exact, verbatim quote taken from that file's content in "sources" - never a paraphrase or a claim about content you were not actually given. If a file's content is truncated and the fact you need lives past the cutoff, do not fabricate a quote for it - raise a Decision instead.
-- source_inventory_digest must equal the source_inventory_digest already present in the supplied inventory payload.
+- Copy source_inventory_digest verbatim from the top-level "source_inventory_digest" field of this payload into your response's source_inventory_digest field - do not compute or alter it.
 - If something is ambiguous and the sources do not resolve it, emit a Decision naming exactly what's unresolved - never guess.
 - Never cite evidence for a file that is not present in the supplied inventory.`
 
@@ -86,23 +88,35 @@ type sourceExcerpt struct {
 }
 
 // evidencePayload is what's actually sent to the provider as the user
-// message: the inventory (structure, digests, citation edges) plus real
-// file content for it to read and quote from. Sending the inventory alone
-// gives a provider metadata about the workspace but never the prose or
-// code it would need to infer workflow steps or produce a supporting quote
-// - see buildSourceExcerpts.
+// message: the inventory (structure, digests, citation edges), real file
+// content for it to read and quote from, and the source_inventory_digest
+// it's required to echo back verbatim (see model.ComputeInventoryDigest -
+// inventory.Inventory itself carries no such field, so the payload has to
+// supply it explicitly rather than the system prompt pointing at a value
+// that was never actually there). Sending the inventory alone gives a
+// provider metadata about the workspace but never the prose or code it
+// would need to infer workflow steps or produce a supporting quote - see
+// buildSourceExcerpts.
 type evidencePayload struct {
-	Inventory inventory.Inventory `json:"inventory"`
-	Sources   []sourceExcerpt     `json:"sources"`
+	Inventory             inventory.Inventory `json:"inventory"`
+	Sources               []sourceExcerpt     `json:"sources"`
+	SourceInventoryDigest string              `json:"source_inventory_digest"`
 }
 
 // buildSourceExcerpts reads inv's files from inv.Root (the same workspace
 // inventory.Discover walked) and returns their content, capped per-file so
 // the prompt stays bounded regardless of workspace size. A file it can't
-// read, or that's too large to bother with, is simply omitted rather than
-// failing the whole call - Analyze's evidence checks (path/digest
-// resolution, quote verification) are the real gate on whether the
-// provider's eventual output is trustworthy, not this best-effort read.
+// read, that's too large to bother with, or whose live content no longer
+// matches the digest inv.Discover recorded for it (the workspace changed
+// on disk after discovery ran) is simply omitted rather than failing the
+// whole call - Analyze's evidence checks (path/digest resolution, quote
+// verification) are the real gate on whether the provider's eventual
+// output is trustworthy, not this best-effort read. Omitting a
+// digest-mismatched file specifically avoids handing the provider content
+// that no longer matches the digest the rest of the payload still claims
+// for that path - it would otherwise cite a citation with a digest that
+// looks valid (it's the one still in "inventory") but describes content
+// that isn't what's actually there anymore.
 func buildSourceExcerpts(inv inventory.Inventory) []sourceExcerpt {
 	excerpts := make([]sourceExcerpt, 0, len(inv.Entries))
 	for _, e := range inv.Entries {
@@ -111,6 +125,9 @@ func buildSourceExcerpts(inv inventory.Inventory) []sourceExcerpt {
 		}
 		data, err := os.ReadFile(filepath.Join(inv.Root, filepath.FromSlash(e.Path)))
 		if err != nil {
+			continue
+		}
+		if digestOf(data) != e.Digest {
 			continue
 		}
 		truncated := false
@@ -132,7 +149,26 @@ func (c ClaudeProvider) Analyze(ctx context.Context, inv inventory.Inventory) ([
 		return nil, fmt.Errorf("no Claude API key: set %s or ClaudeProvider.APIKey", claudeAPIKeyEnv)
 	}
 
-	evidence, err := json.Marshal(evidencePayload{Inventory: inv, Sources: buildSourceExcerpts(inv)})
+	// Refuse outright rather than silently filtering: packages.Validate/
+	// export.go already treat any ScanForSecrets finding as a hard blocker
+	// ("must not ship something with an unresolved secret finding"), and a
+	// workspace containing a credential file is the same situation here -
+	// this call is about to send file content to an external API, so any
+	// finding must stop that before it happens, not just quietly work
+	// around it. FixtureProvider never makes a network call, so it isn't
+	// subject to this check - the risk is specific to sending data
+	// externally.
+	if findings, err := packages.ScanForSecrets(inv.Root); err != nil {
+		return nil, fmt.Errorf("scan workspace for secrets before sending to Claude: %w", err)
+	} else if len(findings) > 0 {
+		return nil, fmt.Errorf("refusing to send workspace %s to Claude: %d file(s) look like credentials (e.g. %s: %s); remove or exclude them before analyzing", inv.Root, len(findings), findings[0].Path, findings[0].Reason)
+	}
+
+	evidence, err := json.Marshal(evidencePayload{
+		Inventory:             inv,
+		Sources:               buildSourceExcerpts(inv),
+		SourceInventoryDigest: model.ComputeInventoryDigest(inv),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal inventory evidence: %w", err)
 	}

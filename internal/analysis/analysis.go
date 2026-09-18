@@ -12,6 +12,8 @@ package analysis
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +23,16 @@ import (
 	"github.com/agentic-lineage/lineage/internal/inventory"
 	"github.com/agentic-lineage/lineage/internal/model"
 )
+
+// digestOf hashes data the same way inventory.Entry.Digest is computed
+// ("sha256:<hex>"), so freshly re-read file content can be compared
+// directly against the digest inventory.Discover recorded for it. Shared
+// by claude.go's buildSourceExcerpts and this file's verifyQuotedEvidence
+// - both need to detect a file that's changed on disk since discovery ran.
+func digestOf(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
 
 // Provider turns source evidence into a candidate behavioral model. It
 // returns the provider's raw output, not a parsed model.BehavioralModel:
@@ -109,6 +121,12 @@ func allEvidenceRefs(m model.BehavioralModel) []evidenceRefContext {
 				add(fmt.Sprintf("step %q claim %q", step.ID, c.Value), c.Evidence)
 			}
 		}
+		for _, s := range step.Setup {
+			add(fmt.Sprintf("step %q setup %q", step.ID, s.Path), s.Evidence)
+		}
+		for _, g := range step.Gates {
+			add(fmt.Sprintf("step %q gate %q", step.ID, g.ID), g.Evidence)
+		}
 	}
 	for _, d := range m.Decisions {
 		add(fmt.Sprintf("decision %q", d.ID), d.Evidence)
@@ -117,28 +135,43 @@ func allEvidenceRefs(m model.BehavioralModel) []evidenceRefContext {
 }
 
 // verifyQuotedEvidence re-reads each cited file from inv.Root — the same
-// workspace inv was discovered from — and checks that every non-empty
-// EvidenceRef.Note actually appears in that file's content (at the cited
-// Line, if set; anywhere in the file otherwise). model.Validate already
-// proves the path/digest resolve; this proves the quote attached to that
-// citation is real rather than invented, which is exactly the gap a
-// provider could otherwise exploit: cite a real, unchanged file but
-// fabricate what it says.
+// workspace inv was discovered from — and checks two things: that the
+// content on disk still matches the digest inv.Discover recorded for it
+// (the file hasn't changed since discovery ran), and that every non-empty
+// EvidenceRef.Note actually appears in that content (at the cited Line, if
+// set; anywhere in the file otherwise). model.Validate already proves the
+// cited digest resolves against inv's metadata; this proves both that the
+// quote attached to a citation is real rather than invented, and that the
+// content being checked against is still the content the model was
+// actually built from - a file edited after discovery (even one that
+// still contains the original quoted line, just with more added) would
+// otherwise pass a naive substring check while no longer being what the
+// evidence claims to describe.
 //
 // A ref with no Note is skipped here — that's qualityNotes' concern
 // (nothing to verify against), not a fabrication to catch.
 func verifyQuotedEvidence(refs []evidenceRefContext, inv inventory.Inventory) []string {
+	entries := make(map[string]inventory.Entry, len(inv.Entries))
+	for _, e := range inv.Entries {
+		entries[e.Path] = e
+	}
+
 	content := make(map[string]string)
-	read := func(path string) (string, bool) {
+	read := func(path string) (string, error) {
 		if c, ok := content[path]; ok {
-			return c, true
+			return c, nil
 		}
 		data, err := os.ReadFile(filepath.Join(inv.Root, filepath.FromSlash(path)))
 		if err != nil {
-			return "", false
+			return "", err
+		}
+		if entry, known := entries[path]; known {
+			if got := digestOf(data); got != entry.Digest {
+				return "", fmt.Errorf("file has changed since inventory discovery (expected digest %s, found %s)", entry.Digest, got)
+			}
 		}
 		content[path] = string(data)
-		return content[path], true
+		return content[path], nil
 	}
 
 	var errs []string
@@ -147,9 +180,9 @@ func verifyQuotedEvidence(refs []evidenceRefContext, inv inventory.Inventory) []
 		if ref.Note == "" {
 			continue
 		}
-		text, ok := read(ref.Path)
-		if !ok {
-			errs = append(errs, fmt.Sprintf("%s: evidence for %q could not be re-read from %s to verify its quote", rc.Context, ref.Path, inv.Root))
+		text, err := read(ref.Path)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: evidence for %q could not be verified: %v", rc.Context, ref.Path, err))
 			continue
 		}
 		if ref.Line > 0 {

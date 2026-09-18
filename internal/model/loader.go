@@ -68,6 +68,17 @@ func computeInventoryDigest(inv inventory.Inventory) string {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
+// ComputeInventoryDigest is computeInventoryDigest, exported for callers
+// outside this package that need to supply the same digest Validate will
+// later compare against — e.g. internal/analysis, which must hand a
+// provider the digest its response is expected to echo back as
+// BehavioralModel.SourceInventoryDigest. Sharing this one implementation
+// (rather than a second copy in internal/analysis) guarantees the two
+// values are computed identically, not just similarly.
+func ComputeInventoryDigest(inv inventory.Inventory) string {
+	return computeInventoryDigest(inv)
+}
+
 // ParseModel parses raw JSON into a BehavioralModel and canonicalizes
 // Decision order (sorted by ID) — the guarantee BehavioralModel.Decisions'
 // doc comment already promises but that nothing previously enforced (flagged

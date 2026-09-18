@@ -95,7 +95,7 @@ func nonNil(values []string) []string {
 	return values
 }
 
-func inspectReport(pkg packages.Package, findings []packages.InstructionFinding, weight snapshot.WeightReport) PackageReport {
+func inspectReport(pkg packages.Package, findings []packages.InstructionFinding, weight *snapshot.WeightReport) PackageReport {
 	return PackageReport{
 		Name:            pkg.Manifest.Name,
 		Version:         pkg.Manifest.Version,
@@ -115,7 +115,7 @@ func inspectReport(pkg packages.Package, findings []packages.InstructionFinding,
 			Network:        nonNil(pkg.Manifest.Capabilities.Network),
 		},
 		InstructionFindings: toInstructionRiskReports(findings),
-		Weight:              &weight,
+		Weight:              weight,
 	}
 }
 

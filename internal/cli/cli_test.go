@@ -712,6 +712,44 @@ func TestInspectShowsPackageWithoutEnabling(t *testing.T) {
 	}
 }
 
+func TestInspectStillReportsPackageWhenWeightCannotBeBuilt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires additional Windows privileges")
+	}
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	pkgDir := filepath.Join(tmp, "symlinked-manifest-pack")
+	if err := packages.InitPackage(pkgDir, "symlinked-manifest-pack"); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(pkgDir, packages.ManifestFileName)
+	targetPath := filepath.Join(pkgDir, "manifest-target.yaml")
+	if err := os.Rename(manifestPath, targetPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Base(targetPath), manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.HomeEnv, home)
+
+	var stdout, stderr bytes.Buffer
+	if err := Execute(nil, []string{"inspect", pkgDir}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("inspect error = %v stderr=%s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "symlinked-manifest-pack@0.1.0") || !strings.Contains(stdout.String(), "weight: unavailable") {
+		t.Fatalf("inspect output = %q, want normal report plus weight warning", stdout.String())
+	}
+
+	stdout.Reset()
+	if err := Execute(nil, []string{"inspect", pkgDir, "--yaml"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("inspect --yaml error = %v stderr=%s", err, stderr.String())
+	}
+	report := decodeReport(t, stdout.String())
+	if report.Name != "symlinked-manifest-pack" || report.Weight != nil {
+		t.Fatalf("report = %+v, want package report without supplementary weight", report)
+	}
+}
+
 func TestDoctorOutsideProjectSkipsPackageChecks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(config.HomeEnv, home)

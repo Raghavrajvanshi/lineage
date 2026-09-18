@@ -73,6 +73,10 @@ func InspectWeight(home string, m ContentManifest) (WeightReport, error) {
 	report := WeightReport{
 		Estimator: EstimatorReport{Name: weightEstimatorName, Version: weightEstimatorVersion},
 		Assets:    make([]AssetWeight, 0, len(m.Assets)),
+		// A package can legitimately have only its manifest. An empty body is
+		// still an exact, estimable zero rather than an unknown estimate.
+		Stub:     WeightBucket{Context: ContextEstimate{Available: true}},
+		FullBody: WeightBucket{Context: ContextEstimate{Available: true}},
 	}
 	seen := make(map[ObjectID]struct{}, len(m.Assets))
 	for _, asset := range m.Assets {

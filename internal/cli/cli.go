@@ -1364,15 +1364,11 @@ func runInspect(args []string, home string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stderr, err)
 		return err
 	}
-	contentManifest, err := snapshot.BuildContentManifest(pkg.Path)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return err
-	}
-	weight, err := snapshot.InspectWeight(home, contentManifest)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return err
+	weight, weightErr := inspectWeight(home, pkg.Path)
+	if weightErr != nil {
+		// Weight is supplementary to inspection. Keep the existing read-only
+		// report useful for packages that cannot enter the stricter CAS path.
+		weight = nil
 	}
 
 	if yamlOutput {
@@ -1394,9 +1390,25 @@ func runInspect(args []string, home string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "capabilities:\n")
 	fmt.Fprintf(stdout, "  filesystem.read: %s\n", listValue(pkg.Manifest.Capabilities.Filesystem.Read))
 	fmt.Fprintf(stdout, "  network: %s\n", listValue(pkg.Manifest.Capabilities.Network))
-	writeWeightReport(stdout, weight)
+	if weight != nil {
+		writeWeightReport(stdout, *weight)
+	} else {
+		fmt.Fprintf(stdout, "weight: unavailable (%v)\n", weightErr)
+	}
 	printInstructionFindings(stdout, findings)
 	return nil
+}
+
+func inspectWeight(home, packagePath string) (*snapshot.WeightReport, error) {
+	contentManifest, err := snapshot.BuildContentManifest(packagePath)
+	if err != nil {
+		return nil, err
+	}
+	report, err := snapshot.InspectWeight(home, contentManifest)
+	if err != nil {
+		return nil, err
+	}
+	return &report, nil
 }
 
 // writeWeightReport presents exact byte totals separately from the generic

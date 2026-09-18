@@ -128,6 +128,46 @@ func TestInspectWeightSeparatesLogicalWeightFromLocalCAS(t *testing.T) {
 	}
 }
 
+func TestInspectWeightEstimatesKnownTextExtensionsAndEmptyBody(t *testing.T) {
+	t.Run("known text extensions", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "text-pack")
+		if err := packages.InitPackage(dir, "text-pack"); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(dir, "references", "notes.txt"), "plain text")
+		mustWrite(t, filepath.Join(dir, "references", "README.MD"), "upper case markdown")
+		manifest, err := BuildContentManifest(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		report, err := InspectWeight(t.TempDir(), manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.FullBody.Context.Available || report.FullBody.Context.Tokens == 0 {
+			t.Errorf("full body context = %+v, want available estimate for text assets", report.FullBody.Context)
+		}
+	})
+
+	t.Run("manifest only", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "empty-pack")
+		if err := packages.InitPackage(dir, "empty-pack"); err != nil {
+			t.Fatal(err)
+		}
+		manifest, err := BuildContentManifest(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		report, err := InspectWeight(t.TempDir(), manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.FullBody.Context.Available || report.FullBody.Context.Tokens != 0 {
+			t.Errorf("empty full body context = %+v, want available zero estimate", report.FullBody.Context)
+		}
+	})
+}
+
 func TestReadObjectDetectsCorruption(t *testing.T) {
 	home := t.TempDir()
 

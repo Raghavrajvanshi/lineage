@@ -374,7 +374,15 @@ func excerptAround(content string, start, end int) string {
 // alternative treats a backslash-escaped quote as content, not the closing
 // delimiter (`(?:[^"\\]|\\.)*`), so an escaped quote inside the value can't
 // end the match early and leave the remainder of the credential printed.
-var genericCredentialExcerptPattern = regexp.MustCompile(`(?i)\b(api[-_ ]?keys?|tokens?|secrets?|passwords?|passwd|pwd|credentials?)\s*[:=]\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s'",;]+)`)
+// The closing quote itself is optional: excerptAround bounds this text to
+// one line before redaction ever runs, so a quoted value whose real closing
+// quote sits on a later line (or a genuinely unterminated quote) has no
+// closing delimiter left to find within that line. Making it optional means
+// the greedy body then consumes to the end of the available text instead of
+// failing to match at all - a value cut off by line-truncation, or actually
+// unterminated, is redacted conservatively to the end of the excerpt rather
+// than left printed in full.
+var genericCredentialExcerptPattern = regexp.MustCompile(`(?i)\b(api[-_ ]?keys?|tokens?|secrets?|passwords?|passwd|pwd|credentials?)\s*[:=]\s*("(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|[^\s'",;]+)`)
 
 // redactSecretLike replaces anything in s that looks like a credential
 // value with a fixed placeholder. It is applied to every Excerpt before it

@@ -362,29 +362,29 @@ func excerptAround(content string, start, end int) string {
 	return line
 }
 
-// secretLikeExcerptPatterns are applied to every Excerpt before it is ever
-// stored or printed, so a risky-instruction excerpt can never itself leak a
-// credential sitting on the same line as the flagged pattern. This
-// deliberately reuses the same high-confidence patterns ScanForSecrets
-// matches on (docs/decisions/0009's "precise over exhaustive" tradeoff),
-// plus a generic key=value / key: value form for common credential names —
-// broader than ScanForSecrets needs to be, because here the goal is never
-// printing a plausible secret value, not just catching known token formats.
-var secretLikeExcerptPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`),
-	regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b`),
-	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}`),
-	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{30,}`),
-	regexp.MustCompile(`(?i)\b(api[-_ ]?keys?|tokens?|secrets?|passwords?|passwd|pwd|credentials?)\s*[:=]\s*['"]?[^\s'",;]+`),
-}
+// genericCredentialExcerptPattern catches common credential-shaped
+// "name: value" / "name=value" pairs (api key, token, secret, password, ...)
+// that secretContentPatterns doesn't target — it's deliberately broader than
+// ScanForSecrets needs to be, because here the goal is never printing a
+// plausible secret value, not just catching known token formats.
+var genericCredentialExcerptPattern = regexp.MustCompile(`(?i)\b(api[-_ ]?keys?|tokens?|secrets?|passwords?|passwd|pwd|credentials?)\s*[:=]\s*['"]?[^\s'",;]+`)
 
 // redactSecretLike replaces anything in s that looks like a credential
-// value with a fixed placeholder. For the generic "name: value" /
-// "name=value" pattern only the value is redacted, so the excerpt still
-// shows which credential name the flagged content referenced without ever
-// printing the value itself.
+// value with a fixed placeholder. It is applied to every Excerpt before it
+// is ever stored or printed, so a risky-instruction excerpt can never
+// itself leak a credential sitting on the same line as the flagged
+// pattern. It shares secretContentPatterns — the same high-confidence
+// patterns ScanForSecrets matches on (docs/decisions/0009's "precise over
+// exhaustive" tradeoff) — rather than a hand-copied subset, so a pattern
+// added there (like a new provider's key format) can't silently miss here.
+// For the generic "name: value" / "name=value" pattern only the value is
+// redacted, so the excerpt still shows which credential name the flagged
+// content referenced without ever printing the value itself.
 func redactSecretLike(s string) string {
-	for _, p := range secretLikeExcerptPatterns {
+	patterns := make([]*regexp.Regexp, 0, len(secretContentPatterns)+1)
+	patterns = append(patterns, secretContentPatterns...)
+	patterns = append(patterns, genericCredentialExcerptPattern)
+	for _, p := range patterns {
 		s = p.ReplaceAllStringFunc(s, func(m string) string {
 			if idx := strings.IndexAny(m, ":="); idx >= 0 {
 				return strings.TrimRight(m[:idx+1], " ") + " [REDACTED]"

@@ -98,6 +98,24 @@ func TestScanForSecretsFlagsFineGrainedGitHubToken(t *testing.T) {
 	}
 }
 
+func TestScanForSecretsFlagsGoogleAPIKey(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "gcp-pack")
+	if err := InitPackage(root, "gcp-pack"); err != nil {
+		t.Fatal(err)
+	}
+	// Split for the same reason as the AKIA fixture above.
+	fakeGoogleAPIKey := "AIza" + strings.Repeat("A", 35)
+	mustWrite(t, filepath.Join(root, "references", "gcp.txt"), "GOOGLE_API_KEY="+fakeGoogleAPIKey+"\n")
+
+	findings, err := ScanForSecrets(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFindingForPath(findings, filepath.ToSlash(filepath.Join("references", "gcp.txt"))) {
+		t.Fatalf("findings = %#v, want a finding for the Google API key", findings)
+	}
+}
+
 func TestScanForSecretsCatchesContentInFilesOverSizeCap(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "big-pack")
 	if err := InitPackage(root, "big-pack"); err != nil {

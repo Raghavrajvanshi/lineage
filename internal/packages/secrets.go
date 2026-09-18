@@ -54,7 +54,11 @@ var secretContentPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b`),
 	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}`),   // GitHub token prefixes (ghp_, gho_, ghu_, ghs_, ghr_)
 	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{30,}`), // GitHub fine-grained personal access token
-	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`),      // Google API key
+	// Google API key: no trailing \b - the key alphabet includes `-`, and a
+	// key ending in `-` sits at a non-word/non-word boundary (whitespace or
+	// end of input both count as non-word), so a trailing \b silently fails
+	// to match exactly the keys most likely to need it.
+	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}`), // Google API key
 }
 
 // ScanForSecrets walks a package directory and flags files that look like

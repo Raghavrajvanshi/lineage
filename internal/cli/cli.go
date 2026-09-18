@@ -1113,7 +1113,12 @@ func runAdd(args []string, home string, stdin *bufio.Reader, stdout, stderr io.W
 	}
 
 	fmt.Fprintln(stdout)
-	enabled, err := enableRef(name, home, autoApprove, showsRiskInfo, stdin, stdout, stderr)
+	// preConfirmed should only suppress enableRef's own printing when add
+	// actually already printed this section above - which only happens when
+	// !autoApprove. Under --yes, the block above never runs, so passing
+	// showsRiskInfo alone here would tell enableRef to stay silent about
+	// warnings/unscanned findings that were never shown anywhere.
+	enabled, err := enableRef(name, home, autoApprove, showsRiskInfo && !autoApprove, stdin, stdout, stderr)
 	if err != nil {
 		return err
 	}

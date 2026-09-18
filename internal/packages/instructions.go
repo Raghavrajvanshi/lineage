@@ -366,8 +366,12 @@ func excerptAround(content string, start, end int) string {
 // "name: value" / "name=value" pairs (api key, token, secret, password, ...)
 // that secretContentPatterns doesn't target — it's deliberately broader than
 // ScanForSecrets needs to be, because here the goal is never printing a
-// plausible secret value, not just catching known token formats.
-var genericCredentialExcerptPattern = regexp.MustCompile(`(?i)\b(api[-_ ]?keys?|tokens?|secrets?|passwords?|passwd|pwd|credentials?)\s*[:=]\s*['"]?[^\s'",;]+`)
+// plausible secret value, not just catching known token formats. The value
+// alternatives try a complete double-quoted value, then a complete
+// single-quoted value, before falling back to an unquoted run - in that
+// order, so a quoted value's internal spaces/commas/semicolons stay part of
+// the match instead of truncating redaction at the first one.
+var genericCredentialExcerptPattern = regexp.MustCompile(`(?i)\b(api[-_ ]?keys?|tokens?|secrets?|passwords?|passwd|pwd|credentials?)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s'",;]+)`)
 
 // redactSecretLike replaces anything in s that looks like a credential
 // value with a fixed placeholder. It is applied to every Excerpt before it

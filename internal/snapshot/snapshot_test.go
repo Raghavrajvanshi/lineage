@@ -3,6 +3,7 @@ package snapshot
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/agentic-lineage/lineage/internal/config"
@@ -121,6 +122,89 @@ func TestVerifyObject(t *testing.T) {
 	}
 }
 
+func TestWriteObjectRejectsCorruptExistingObject(t *testing.T) {
+	home := t.TempDir()
+	id, err := WriteObject(home, []byte("payload"))
+	if err != nil {
+		t.Fatalf("WriteObject() error = %v", err)
+	}
+	path, err := blobPath(config.ObjectsDir(home), id)
+	if err != nil {
+		t.Fatalf("blobPath() error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteObject(home, []byte("payload")); err == nil {
+		t.Fatal("WriteObject() error = nil for corrupt existing object, want error")
+	}
+}
+
+func TestWriteObjectConcurrentCallsConverge(t *testing.T) {
+	home := t.TempDir()
+	const writers = 16
+	ids := make(chan ObjectID, writers)
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id, err := WriteObject(home, []byte("shared payload"))
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- id
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Errorf("WriteObject() concurrent error = %v", err)
+	}
+	var first ObjectID
+	for id := range ids {
+		if first == "" {
+			first = id
+		} else if id != first {
+			t.Errorf("WriteObject() ids = %q, %q; want one shared object", first, id)
+		}
+	}
+	if _, err := ReadObject(home, first); err != nil {
+		t.Fatalf("ReadObject() after concurrent writes error = %v", err)
+	}
+}
+
+func TestObjectAvailabilityDistinguishesMissingAndCorrupt(t *testing.T) {
+	home := t.TempDir()
+	missing := ObjectID("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	status, err := ObjectAvailability(home, missing)
+	if err != nil || status != ObjectMissing {
+		t.Fatalf("ObjectAvailability(missing) = %v, %v; want ObjectMissing, nil", status, err)
+	}
+	id, err := WriteObject(home, []byte("payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err = ObjectAvailability(home, id)
+	if err != nil || status != ObjectVerified {
+		t.Fatalf("ObjectAvailability(verified) = %v, %v; want ObjectVerified, nil", status, err)
+	}
+	path, err := blobPath(config.ObjectsDir(home), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status, err = ObjectAvailability(home, id)
+	if err == nil || status != ObjectCorrupt {
+		t.Fatalf("ObjectAvailability(corrupt) = %v, %v; want ObjectCorrupt, error", status, err)
+	}
+}
+
 func TestCreateIsDeterministic(t *testing.T) {
 	home := t.TempDir()
 	dir := buildTestPackage(t, "agent-pack")
@@ -207,6 +291,151 @@ func TestCreateManifestIncludesManifestFile(t *testing.T) {
 	}
 	if m.Name != "agent-pack" || m.Version != "0.1.0" {
 		t.Fatalf("Create() manifest name/version = %q/%q, want agent-pack/0.1.0", m.Name, m.Version)
+	}
+}
+
+func TestMigrateLegacyInstallCreatesCompleteRelease(t *testing.T) {
+	home := t.TempDir()
+	dir := buildTestPackage(t, "agent-pack")
+
+	m, err := MigrateLegacyInstall(home, dir)
+	if err != nil {
+		t.Fatalf("MigrateLegacyInstall() error = %v", err)
+	}
+	loaded, err := LoadRelease(home, m.Name, m.Version)
+	if err != nil {
+		t.Fatalf("LoadRelease() error = %v", err)
+	}
+	if loaded.PackageDigest != m.PackageDigest || len(loaded.Assets) != len(m.Assets) {
+		t.Fatalf("LoadRelease() = %+v, want %+v", loaded, m)
+	}
+	if _, err := os.Stat(filepath.Join(dir, packages.ManifestFileName)); err != nil {
+		t.Fatalf("MigrateLegacyInstall() changed legacy package directory: %v", err)
+	}
+}
+
+func TestMaterializeReleaseReconstructsVerifiedPackage(t *testing.T) {
+	home := t.TempDir()
+	dir := buildTestPackage(t, "agent-pack")
+	m, err := MigrateLegacyInstall(home, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "restored")
+	if err := MaterializeRelease(home, m.Name, m.Version, dest); err != nil {
+		t.Fatalf("MaterializeRelease() error = %v", err)
+	}
+	for _, rel := range []string{"lineage.yaml", "skills/hello/SKILL.md", "skills/world/SKILL.md"} {
+		want, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(dest, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Errorf("materialized %s = %q, want %q", rel, got, want)
+		}
+	}
+}
+
+func TestStorePackageDeduplicatesAcrossPackages(t *testing.T) {
+	home := t.TempDir()
+	firstDir := buildTestPackage(t, "first-pack")
+	secondDir := buildTestPackage(t, "second-pack")
+	mustWrite(t, filepath.Join(firstDir, "skills", "hello", "SKILL.md"), "# Shared\n")
+	mustWrite(t, filepath.Join(secondDir, "skills", "hello", "SKILL.md"), "# Shared\n")
+
+	first, err := StorePackage(home, firstDir)
+	if err != nil {
+		t.Fatalf("StorePackage(first) error = %v", err)
+	}
+	second, err := StorePackage(home, secondDir)
+	if err != nil {
+		t.Fatalf("StorePackage(second) error = %v", err)
+	}
+	var firstID, secondID ObjectID
+	for _, asset := range first.Assets {
+		if asset.Path == "skills/hello/SKILL.md" {
+			firstID = asset.Object
+		}
+	}
+	for _, asset := range second.Assets {
+		if asset.Path == "skills/hello/SKILL.md" {
+			secondID = asset.Object
+		}
+	}
+	if firstID == "" || secondID == "" || firstID != secondID {
+		t.Fatalf("shared asset ids = %q, %q; want the same object", firstID, secondID)
+	}
+}
+
+func TestBuildContentManifestRejectsSymlinkedPackageManifest(t *testing.T) {
+	dir := buildTestPackage(t, "agent-pack")
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	mustWrite(t, outside, "schema: 1\nname: agent-pack\nversion: 0.1.0\n")
+	manifestPath := filepath.Join(dir, packages.ManifestFileName)
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, manifestPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := BuildContentManifest(dir); err == nil {
+		t.Fatal("BuildContentManifest() error = nil for a symlinked package manifest, want error")
+	}
+}
+
+func TestCommitReleaseDoesNotPublishIncompleteManifest(t *testing.T) {
+	home := t.TempDir()
+	dir := buildTestPackage(t, "agent-pack")
+	m, err := BuildContentManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CommitRelease(home, m); err == nil {
+		t.Fatal("CommitRelease() error = nil for missing objects, want error")
+	}
+	if _, err := LoadRelease(home, m.Name, m.Version); !os.IsNotExist(err) {
+		t.Fatalf("LoadRelease() error = %v after failed commit, want IsNotExist", err)
+	}
+}
+
+func TestCommitReleaseDoesNotReplaceExistingCompleteRelease(t *testing.T) {
+	home := t.TempDir()
+	dir := buildTestPackage(t, "agent-pack")
+	complete, err := MigrateLegacyInstall(home, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(dir, "skills", "hello", "SKILL.md"), "# Changed\n")
+	incomplete, err := BuildContentManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CommitRelease(home, incomplete); err == nil {
+		t.Fatal("CommitRelease() error = nil for an incomplete update, want error")
+	}
+	loaded, err := LoadRelease(home, complete.Name, complete.Version)
+	if err != nil {
+		t.Fatalf("LoadRelease() error = %v after incomplete update", err)
+	}
+	if loaded.PackageDigest != complete.PackageDigest {
+		t.Fatalf("LoadRelease() package digest = %q, want previous complete digest %q", loaded.PackageDigest, complete.PackageDigest)
+	}
+}
+
+func TestCommitReleaseRejectsMismatchedPackageDigest(t *testing.T) {
+	home := t.TempDir()
+	dir := buildTestPackage(t, "agent-pack")
+	m, err := StorePackage(home, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.PackageDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := CommitRelease(home, m); err == nil {
+		t.Fatal("CommitRelease() error = nil for a mismatched package digest, want error")
 	}
 }
 

@@ -437,13 +437,15 @@ func contentKind(rel string) string {
 }
 
 func contentMediaType(rel string) string {
-	switch path.Ext(rel) {
+	switch strings.ToLower(path.Ext(rel)) {
 	case ".md", ".mdc":
 		return "text/markdown"
 	case ".yaml", ".yml":
 		return "application/yaml"
 	case ".json":
 		return "application/json"
+	case ".txt", ".sh", ".bash", ".zsh", ".py", ".go", ".js", ".ts", ".toml", ".ini", ".cfg", ".conf", ".xml", ".html", ".css":
+		return "text/plain"
 	default:
 		return ""
 	}

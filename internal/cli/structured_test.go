@@ -156,4 +156,10 @@ func TestInspectYAMLReportsFullPackage(t *testing.T) {
 	if report.Result != "" {
 		t.Errorf("report.Result = %q, want empty (inspect has no pass/fail concept)", report.Result)
 	}
+	if report.Weight == nil || report.Weight.StoredBytes == 0 {
+		t.Errorf("report.Weight = %+v, want package weight report", report.Weight)
+	}
+	if report.Weight.Estimator.Name != "bytes-per-token" || report.Weight.Estimator.Exact {
+		t.Errorf("report.Weight.Estimator = %+v, want named non-exact estimator", report.Weight.Estimator)
+	}
 }

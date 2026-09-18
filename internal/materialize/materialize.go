@@ -293,7 +293,12 @@ func DiagnoseState(projectRoot, providerName string) ([]string, error) {
 	}
 	var missing []string
 	for _, rel := range s.SkillDirs {
-		info, statErr := os.Lstat(filepath.Join(projectRoot, rel))
+		path, ok := recordedSkillDirPath(projectRoot, providerName, rel)
+		if !ok {
+			missing = append(missing, rel)
+			continue
+		}
+		info, statErr := os.Lstat(path)
 		if os.IsNotExist(statErr) {
 			missing = append(missing, rel)
 		} else if statErr != nil {
@@ -306,6 +311,38 @@ func DiagnoseState(projectRoot, providerName string) ([]string, error) {
 		}
 	}
 	return missing, nil
+}
+
+func recordedSkillDirPath(projectRoot, providerName, rel string) (string, bool) {
+	adapter, err := provider.Get(providerName)
+	if err != nil {
+		return "", false
+	}
+	if rel == "" || filepath.IsAbs(rel) || filepath.Clean(rel) != rel {
+		return "", false
+	}
+	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+		if part == ".." {
+			return "", false
+		}
+	}
+	cleanSkillsDir := filepath.Clean(adapter.SkillsDir)
+	if cleanSkillsDir == "." || filepath.IsAbs(cleanSkillsDir) {
+		return "", false
+	}
+	if rel != cleanSkillsDir && !strings.HasPrefix(rel, cleanSkillsDir+string(os.PathSeparator)) {
+		return "", false
+	}
+	absRoot, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", false
+	}
+	path := filepath.Join(absRoot, rel)
+	contained, err := filepath.Rel(absRoot, path)
+	if err != nil || contained == ".." || strings.HasPrefix(contained, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	return path, true
 }
 
 func loadState(projectRoot, providerName string) (state, error) {

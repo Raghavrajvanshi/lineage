@@ -943,6 +943,49 @@ func TestDiagnoseStateReportsSkillDirectoryReplacedBySymlink(t *testing.T) {
 	}
 }
 
+func TestDiagnoseStateReportsTraversalSkillDirEntry(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(parent, "outside", ".claude", "skills", "evil")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rel := filepath.Join("..", "outside", ".claude", "skills", "evil")
+	if err := saveState(root, "claude", state{Schema: currentStateSchema, SkillDirs: []string{rel}}); err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := DiagnoseState(root, "claude")
+	if err != nil {
+		t.Fatalf("DiagnoseState() error = %v", err)
+	}
+	if len(missing) != 1 || missing[0] != rel {
+		t.Fatalf("DiagnoseState() = %v, want the traversal skill dir entry", missing)
+	}
+}
+
+func TestDiagnoseStateReportsAbsoluteSkillDirEntry(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), ".claude", "skills", "evil")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveState(root, "claude", state{Schema: currentStateSchema, SkillDirs: []string{outside}}); err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := DiagnoseState(root, "claude")
+	if err != nil {
+		t.Fatalf("DiagnoseState() error = %v", err)
+	}
+	if len(missing) != 1 || missing[0] != outside {
+		t.Fatalf("DiagnoseState() = %v, want the absolute skill dir entry", missing)
+	}
+}
+
 func TestDiagnoseStateBeforeApplyReportsNothing(t *testing.T) {
 	root := t.TempDir()
 	missing, err := DiagnoseState(root, "claude")

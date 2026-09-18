@@ -134,6 +134,14 @@ archive download, and a copy-paste bootstrap prompt for someone who has never
 installed Lineage before. The canonical bootstrap prompt lives in
 [docs/bootstrap-prompt.md](docs/bootstrap-prompt.md).
 
+The production registry is served by the Lineage website API and currently
+stores package metadata/aggregate metrics in Supabase Postgres with immutable
+archives in a private Supabase Storage bucket. Publisher identity is still
+verified through GitHub (`lineage login` or `LINEAGE_PUBLISH_TOKEN` with
+`read:user`), and the original GitHub Releases registry remains the migration
+source and rollback path while the Supabase-backed registry is exercised in
+production.
+
 ## Sharing A `.tgz` Archive
 
 You can share a package without the registry:

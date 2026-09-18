@@ -4,6 +4,17 @@ All notable changes to Lineage will be documented here.
 
 ## Unreleased
 
+- Instruction-risk scanning (#128): `lineage package validate`/`publish` now
+  check skills, workflows, agents, policies, adapters, and
+  `setup.files[].template` for risky agent-instruction patterns (prompt
+  override, broad local reads, network/credential exfiltration, silent
+  destructive operations, credential/session-data collection, and
+  disable-safety language), alongside the existing secret scan. Findings are
+  categorized with a severity: a hard-stop finding blocks validate/publish
+  and refuses `enable`; a warning is shown and requires confirmation at
+  `enable` time before materialization, and is visible in `inspect`
+  (human-readable and `--yaml`). See
+  [docs/decisions/0019](docs/decisions/0019-instruction-risk-scanning-severity-and-scope.md).
 - `lineage doctor` now validates materialize state staleness (warning, since
   it's regenerable via `lineage run`), `.lineage/graph.json` parseability,
   and snapshot-store referential integrity — every object a snapshot

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -107,8 +108,11 @@ func TestCompileTwoStepPackagePassesValidate(t *testing.T) {
 	}
 
 	script, ok := fileByPath(res, "skills/deploy/scripts/deploy.sh")
-	if !ok || script.Mode != 0o755 {
-		t.Errorf("deploy.sh bundled = %v mode %v, want bundled 0755", ok, script.Mode)
+	if !ok {
+		t.Error("deploy.sh not bundled")
+	}
+	if runtime.GOOS != "windows" && script.Mode != 0o755 {
+		t.Errorf("deploy.sh mode = %v, want 0755", script.Mode)
 	}
 	if _, ok := fileByPath(res, "skills/deploy/references/checklist.md"); !ok {
 		t.Error("reference not bundled under the step skill")

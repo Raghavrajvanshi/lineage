@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/agentic-lineage/lineage/internal/atomicfile"
 	"github.com/agentic-lineage/lineage/internal/config"
 	"github.com/agentic-lineage/lineage/internal/packages"
 )
@@ -34,6 +35,10 @@ type ObjectID string
 // Following ADR 0005's compatibility convention, an absent schema field is
 // treated as version 1; an explicitly declared zero remains unsupported.
 const CurrentManifestSchema = 1
+
+// CurrentContentManifestSchema is the current installed-package content
+// manifest format defined by ADR 0017.
+const CurrentContentManifestSchema = 1
 
 var (
 	objectIDPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -58,6 +63,27 @@ type Manifest struct {
 type ManifestFile struct {
 	Path   string   `json:"path"`
 	Object ObjectID `json:"object"`
+}
+
+// ContentManifest describes the immutable source files required by one
+// package release. It is the release reference written only after every
+// listed object has been verified in the local store.
+type ContentManifest struct {
+	Schema        int            `json:"schema"`
+	Name          string         `json:"name"`
+	Version       string         `json:"version"`
+	PackageDigest string         `json:"package_digest"`
+	Assets        []ContentAsset `json:"assets"`
+}
+
+// ContentAsset maps a package-controlled logical path to one immutable
+// object, retaining the exact byte count required by package inspection.
+type ContentAsset struct {
+	Path      string   `json:"path"`
+	Kind      string   `json:"kind"`
+	Object    ObjectID `json:"digest"`
+	Bytes     int64    `json:"bytes"`
+	MediaType string   `json:"media_type,omitempty"`
 }
 
 func hashID(data []byte) ObjectID {
@@ -101,13 +127,50 @@ func putBlob(root string, data []byte) (ObjectID, error) {
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := writeBlobNoClobber(path, data); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if _, err := getBlob(root, id); err != nil {
 		return "", err
 	}
 	return id, nil
+}
+
+// writeBlobNoClobber publishes a fully written temporary file with a hard
+// link, whose destination-exists behavior is atomic. A concurrent winner is
+// re-verified by putBlob rather than overwritten.
+func writeBlobNoClobber(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".object-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tmpPath, path); err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // getBlob reads the object with the given ID from under root and verifies
@@ -154,6 +217,308 @@ func ReadObject(home string, id ObjectID) ([]byte, error) {
 func VerifyObject(home string, id ObjectID) error {
 	_, err := ReadObject(home, id)
 	return err
+}
+
+// ObjectStatus describes whether an object can be used as verified local
+// content. Missing and corrupt objects are deliberately distinct so a
+// caller cannot mistake corruption for a cache miss.
+type ObjectStatus int
+
+const (
+	ObjectMissing ObjectStatus = iota
+	ObjectVerified
+	ObjectCorrupt
+)
+
+// ObjectAvailability verifies id's stored bytes when present. Invalid IDs
+// are errors because they are malformed manifest input, not cache misses.
+func ObjectAvailability(home string, id ObjectID) (ObjectStatus, error) {
+	_, err := ReadObject(home, id)
+	if err == nil {
+		return ObjectVerified, nil
+	}
+	if os.IsNotExist(err) {
+		return ObjectMissing, nil
+	}
+	return ObjectCorrupt, err
+}
+
+// BuildContentManifest derives ADR 0017's deterministic package content
+// manifest from an already-valid package directory. It does not write data.
+func BuildContentManifest(dir string) (ContentManifest, error) {
+	pkg, err := packages.Discover(dir)
+	if err != nil {
+		return ContentManifest{}, err
+	}
+	relPaths, err := packages.ContentFiles(dir)
+	if err != nil {
+		return ContentManifest{}, err
+	}
+	relPaths = append(relPaths, packages.ManifestFileName)
+	sort.Strings(relPaths)
+	assets := make([]ContentAsset, 0, len(relPaths))
+	for _, rel := range relPaths {
+		data, err := readRegularPackageFile(dir, rel)
+		if err != nil {
+			return ContentManifest{}, fmt.Errorf("read %s for content manifest: %w", rel, err)
+		}
+		assets = append(assets, ContentAsset{
+			Path:      rel,
+			Kind:      contentKind(rel),
+			Object:    hashID(data),
+			Bytes:     int64(len(data)),
+			MediaType: contentMediaType(rel),
+		})
+	}
+	m := ContentManifest{
+		Schema:        CurrentContentManifestSchema,
+		Name:          pkg.Manifest.Name,
+		Version:       pkg.Manifest.Version,
+		PackageDigest: pkg.Digest,
+		Assets:        assets,
+	}
+	if err := validateContentManifest(m); err != nil {
+		return ContentManifest{}, err
+	}
+	return m, nil
+}
+
+// StorePackage admits every source asset from dir to the object store and
+// returns its content manifest. It does not mark the release installed;
+// callers must use CommitRelease after all objects are present.
+func StorePackage(home, dir string) (ContentManifest, error) {
+	m, err := BuildContentManifest(dir)
+	if err != nil {
+		return ContentManifest{}, err
+	}
+	for _, asset := range m.Assets {
+		data, err := readRegularPackageFile(dir, asset.Path)
+		if err != nil {
+			return ContentManifest{}, fmt.Errorf("read %s for object store: %w", asset.Path, err)
+		}
+		id, err := WriteObject(home, data)
+		if err != nil {
+			return ContentManifest{}, fmt.Errorf("store object for %s: %w", asset.Path, err)
+		}
+		if id != asset.Object {
+			return ContentManifest{}, fmt.Errorf("store object for %s: expected %s, got %s", asset.Path, asset.Object, id)
+		}
+	}
+	return m, nil
+}
+
+func readRegularPackageFile(dir, rel string) ([]byte, error) {
+	path, err := packages.SafeJoin(dir, rel)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file")
+	}
+	return os.ReadFile(path)
+}
+
+// CommitRelease atomically records m as installed only when every referenced
+// object is already present and verified. A failed attempt leaves any prior
+// complete release reference unchanged.
+func CommitRelease(home string, m ContentManifest) error {
+	if err := validateContentManifest(m); err != nil {
+		return fmt.Errorf("invalid package content manifest: %w", err)
+	}
+	if err := verifyContentManifestObjects(home, m); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode installed release: %w", err)
+	}
+	path, err := releasePath(home, m.Name, m.Version)
+	if err != nil {
+		return err
+	}
+	if err := atomicfile.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("commit installed release: %w", err)
+	}
+	return nil
+}
+
+// LoadRelease returns a complete installed release reference and re-verifies
+// every object before allowing its manifest to be used.
+func LoadRelease(home, name, version string) (ContentManifest, error) {
+	path, err := releasePath(home, name, version)
+	if err != nil {
+		return ContentManifest{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ContentManifest{}, err
+	}
+	var m ContentManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return ContentManifest{}, fmt.Errorf("parse installed release %s@%s: %w", name, version, err)
+	}
+	if err := validateContentManifest(m); err != nil {
+		return ContentManifest{}, fmt.Errorf("invalid installed release %s@%s: %w", name, version, err)
+	}
+	if m.Name != name || m.Version != version {
+		return ContentManifest{}, fmt.Errorf("installed release %s@%s has mismatched identity %s@%s", name, version, m.Name, m.Version)
+	}
+	if err := verifyContentManifestObjects(home, m); err != nil {
+		return ContentManifest{}, err
+	}
+	return m, nil
+}
+
+// MigrateLegacyInstall converts an existing validated package directory into
+// a complete local content-addressed release without changing that directory.
+func MigrateLegacyInstall(home, dir string) (ContentManifest, error) {
+	m, err := StorePackage(home, dir)
+	if err != nil {
+		return ContentManifest{}, err
+	}
+	if err := CommitRelease(home, m); err != nil {
+		return ContentManifest{}, err
+	}
+	return m, nil
+}
+
+// MaterializeRelease reconstructs a complete installed release at destDir.
+// It verifies every referenced object before writing any package file.
+func MaterializeRelease(home, name, version, destDir string) error {
+	m, err := LoadRelease(home, name, version)
+	if err != nil {
+		return err
+	}
+	contents := make(map[string][]byte, len(m.Assets))
+	for _, asset := range m.Assets {
+		data, err := ReadObject(home, asset.Object)
+		if err != nil {
+			return fmt.Errorf("read object for %s: %w", asset.Path, err)
+		}
+		contents[asset.Path] = data
+	}
+	for _, asset := range m.Assets {
+		dest, err := packages.SafeJoin(destDir, asset.Path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dest, contents[asset.Path], 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func releasePath(home, name, version string) (string, error) {
+	if !identityPattern.MatchString(name) || !identityPattern.MatchString(version) {
+		return "", fmt.Errorf("invalid installed release identity %q@%q", name, version)
+	}
+	return filepath.Join(config.PackageReleasesDir(home), name, version+".json"), nil
+}
+
+func contentKind(rel string) string {
+	if rel == packages.ManifestFileName {
+		return "manifest"
+	}
+	return strings.Split(rel, "/")[0]
+}
+
+func contentMediaType(rel string) string {
+	switch path.Ext(rel) {
+	case ".md", ".mdc":
+		return "text/markdown"
+	case ".yaml", ".yml":
+		return "application/yaml"
+	case ".json":
+		return "application/json"
+	default:
+		return ""
+	}
+}
+
+func validateContentManifest(m ContentManifest) error {
+	if m.Schema != CurrentContentManifestSchema {
+		return fmt.Errorf("declares schema %d, but this build only understands schema %d", m.Schema, CurrentContentManifestSchema)
+	}
+	if !identityPattern.MatchString(m.Name) {
+		return fmt.Errorf("invalid package name %q", m.Name)
+	}
+	if !identityPattern.MatchString(m.Version) {
+		return fmt.Errorf("invalid package version %q", m.Version)
+	}
+	if !objectIDPattern.MatchString(m.PackageDigest) {
+		return fmt.Errorf("invalid package digest %q", m.PackageDigest)
+	}
+	if len(m.Assets) == 0 {
+		return fmt.Errorf("contains no assets")
+	}
+	seen := make(map[string]struct{}, len(m.Assets))
+	manifestFound := false
+	previous := ""
+	for i, asset := range m.Assets {
+		if asset.Path == "" || strings.Contains(asset.Path, `\`) || path.IsAbs(asset.Path) || path.Clean(asset.Path) != asset.Path || asset.Path == "." || strings.HasPrefix(asset.Path, "../") {
+			return fmt.Errorf("asset %d has unsafe or non-canonical path %q", i, asset.Path)
+		}
+		if _, exists := seen[asset.Path]; exists {
+			return fmt.Errorf("contains duplicate asset path %q", asset.Path)
+		}
+		seen[asset.Path] = struct{}{}
+		if previous != "" && asset.Path <= previous {
+			return fmt.Errorf("asset paths are not in strictly sorted order")
+		}
+		previous = asset.Path
+		if asset.Path == packages.ManifestFileName {
+			manifestFound = true
+		}
+		if asset.Kind != contentKind(asset.Path) {
+			return fmt.Errorf("asset %q has invalid kind %q", asset.Path, asset.Kind)
+		}
+		if !objectIDPattern.MatchString(string(asset.Object)) {
+			return fmt.Errorf("asset %q has invalid object id %q", asset.Path, asset.Object)
+		}
+		if asset.Bytes < 0 {
+			return fmt.Errorf("asset %q has negative byte count", asset.Path)
+		}
+	}
+	if !manifestFound {
+		return fmt.Errorf("does not reference %s", packages.ManifestFileName)
+	}
+	return nil
+}
+
+func verifyContentManifestObjects(home string, m ContentManifest) error {
+	contents := make(map[string][]byte, len(m.Assets))
+	for _, asset := range m.Assets {
+		data, err := ReadObject(home, asset.Object)
+		if err != nil {
+			return fmt.Errorf("verify object for %s: %w", asset.Path, err)
+		}
+		if int64(len(data)) != asset.Bytes {
+			return fmt.Errorf("verify object for %s: expected %d bytes, got %d", asset.Path, asset.Bytes, len(data))
+		}
+		contents[asset.Path] = data
+	}
+	h := sha256.New()
+	h.Write(contents[packages.ManifestFileName])
+	for _, asset := range m.Assets {
+		if asset.Path == packages.ManifestFileName {
+			continue
+		}
+		h.Write([]byte(asset.Path))
+		h.Write(contents[asset.Path])
+	}
+	actual := "sha256:" + hex.EncodeToString(h.Sum(nil))
+	if actual != m.PackageDigest {
+		return fmt.Errorf("package digest mismatch: manifest declares %s, objects hash to %s", m.PackageDigest, actual)
+	}
+	return nil
 }
 
 // manifestBytes returns m's canonical, deterministic serialization: the

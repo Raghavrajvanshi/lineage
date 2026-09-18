@@ -237,6 +237,11 @@ The current adapters focus on Claude, Codex, Cursor, Auggie, Windsurf, Aider,
 and Cline. The package shape stays plain so future adapters can use the same
 manifest, skills, workflows, agents, policies, references, and setup material.
 
+Cursor currently supports skills containing only `SKILL.md`. Skills with
+supporting files (such as `scripts/` or `references/`) fail materialization with
+an error listing the unsupported files, rather than silently dropping them.
+Use Claude or Codex for skills that require those supporting assets.
+
 Cursor's real CLI binary isn't literally named `cursor` on most machines (it
 installs as `cursor-agent`, sometimes aliased `agent`), so `lineage run cursor`
 will usually need the `providers.cursor.binary` override shown below —

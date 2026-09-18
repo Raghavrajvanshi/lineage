@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -54,6 +55,16 @@ func cursorRenderSkill(pkgName, skillName string, files map[string][]byte) (stri
 	data, ok := files["SKILL.md"]
 	if !ok {
 		return "", nil, fmt.Errorf("skill %q (package %q) has no SKILL.md; Cursor rules require one", skillName, pkgName)
+	}
+	var supportingFiles []string
+	for path := range files {
+		if path != "SKILL.md" {
+			supportingFiles = append(supportingFiles, path)
+		}
+	}
+	if len(supportingFiles) > 0 {
+		sort.Strings(supportingFiles)
+		return "", nil, fmt.Errorf("skill %q (package %q): Cursor rules currently support only SKILL.md; supporting files cannot be materialized: %s", skillName, pkgName, strings.Join(supportingFiles, ", "))
 	}
 
 	front, body, err := splitFrontmatter(data)

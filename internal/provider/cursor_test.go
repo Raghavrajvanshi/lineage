@@ -38,6 +38,26 @@ func TestCursorRenderSkillProducesValidRule(t *testing.T) {
 	}
 }
 
+func TestCursorRenderSkillFailsClosedOnSupportingFiles(t *testing.T) {
+	files := map[string][]byte{
+		"SKILL.md":                []byte("---\ndescription: Review changes.\n---\nSee scripts/lint.sh and references/checklist.md.\n"),
+		"scripts/lint.sh":         []byte("echo lint\n"),
+		"references/checklist.md": []byte("# Checklist\n"),
+	}
+	filename, content, err := cursorRenderSkill("field-notes", "review", files)
+	if err == nil {
+		t.Fatal("expected an error rather than silently discarding supporting files")
+	}
+	for _, want := range []string{"field-notes", "review", "only SKILL.md", "references/checklist.md, scripts/lint.sh"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
+	}
+	if filename != "" || content != nil {
+		t.Fatalf("failed render returned output: %q, %q", filename, content)
+	}
+}
+
 func TestCursorRenderSkillFailsClosedOnMissingSkillFile(t *testing.T) {
 	_, _, err := cursorRenderSkill("field-notes", "review", map[string][]byte{})
 	if err == nil {

@@ -370,8 +370,11 @@ func excerptAround(content string, start, end int) string {
 // alternatives try a complete double-quoted value, then a complete
 // single-quoted value, before falling back to an unquoted run - in that
 // order, so a quoted value's internal spaces/commas/semicolons stay part of
-// the match instead of truncating redaction at the first one.
-var genericCredentialExcerptPattern = regexp.MustCompile(`(?i)\b(api[-_ ]?keys?|tokens?|secrets?|passwords?|passwd|pwd|credentials?)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s'",;]+)`)
+// the match instead of truncating redaction at the first one. Each quoted
+// alternative treats a backslash-escaped quote as content, not the closing
+// delimiter (`(?:[^"\\]|\\.)*`), so an escaped quote inside the value can't
+// end the match early and leave the remainder of the credential printed.
+var genericCredentialExcerptPattern = regexp.MustCompile(`(?i)\b(api[-_ ]?keys?|tokens?|secrets?|passwords?|passwd|pwd|credentials?)\s*[:=]\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s'",;]+)`)
 
 // redactSecretLike replaces anything in s that looks like a credential
 // value with a fixed placeholder. It is applied to every Excerpt before it

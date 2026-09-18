@@ -82,7 +82,8 @@ skills, not the step's own skill.
 
 `lineage compile` needs no key. `lineage analyze` currently calls the
 Anthropic Messages API with `ANTHROPIC_API_KEY` and sends workspace content to
-Anthropic; `--fixture` runs without credentials.
+Anthropic; `--fixture` runs without credentials. Provider-neutral analysis
+access is tracked in #288.
 
 ## Errors And Notes
 

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -81,16 +80,17 @@ func runAnalyze(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	return nil
 }
 
-// writeModelFile saves m as indented JSON, the format model.ParseModel reads.
+// writeModelFile saves m in the canonical form model.MarshalModel defines, the
+// format model.ParseModel reads.
 // Only a model that passed validation is ever written, so a saved file never
 // holds a model that compile would have to reject for schema or evidence
 // reasons it could have been told about here.
 func writeModelFile(path string, m model.BehavioralModel) error {
-	data, err := json.MarshalIndent(m, "", "  ")
+	data, err := model.MarshalModel(m)
 	if err != nil {
-		return fmt.Errorf("encode behavioral model: %w", err)
+		return err
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write behavioral model: %w", err)
 	}
 	return nil

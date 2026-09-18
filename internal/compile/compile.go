@@ -394,7 +394,7 @@ func (c *compiler) crossChecks(m model.BehavioralModel, inv inventory.Inventory,
 	}
 	for _, f := range c.files {
 		if strings.Contains(f.Path, "/scripts/") || (strings.Contains(f.Path, "/references/") && !strings.HasPrefix(f.Path, "references/")) {
-			c.notes = append(c.notes, "skills with scripts/ or references/ files cannot be materialized by the Cursor adapter, which supports only SKILL.md.")
+			c.notes = append(c.notes, "some provider adapters materialize only SKILL.md and refuse skills with scripts/ or references/ files; check the adapters you target.")
 			break
 		}
 	}

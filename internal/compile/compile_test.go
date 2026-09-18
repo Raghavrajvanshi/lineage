@@ -166,7 +166,7 @@ func TestCompileNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(res.Notes, "\n")
-	for _, want := range []string{"not represented in package", "extra/unused.md", "1 validation gate", "Cursor"} {
+	for _, want := range []string{"not represented in package", "extra/unused.md", "1 validation gate", "materialize only SKILL.md"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("notes missing %q:\n%s", want, joined)
 		}

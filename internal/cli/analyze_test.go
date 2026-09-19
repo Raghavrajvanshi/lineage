@@ -14,6 +14,7 @@ func TestParseAnalyzeArgs(t *testing.T) {
 		wantPath     string
 		wantFixture  string
 		wantProvider string
+		wantModelOut string
 		wantYAML     bool
 		wantErr      bool
 	}{
@@ -21,6 +22,8 @@ func TestParseAnalyzeArgs(t *testing.T) {
 		{name: "path with fixture", args: []string{"workspace", "--fixture", "f.json"}, wantPath: "workspace", wantFixture: "f.json", wantProvider: "claude"},
 		{name: "path with provider", args: []string{"workspace", "--provider", "claude"}, wantPath: "workspace", wantProvider: "claude"},
 		{name: "path with yaml", args: []string{"workspace", "--yaml"}, wantPath: "workspace", wantProvider: "claude", wantYAML: true},
+		{name: "path with model-out", args: []string{"workspace", "--model-out", "m.json"}, wantPath: "workspace", wantProvider: "claude", wantModelOut: "m.json"},
+		{name: "model-out missing value", args: []string{"workspace", "--model-out"}, wantErr: true},
 		{name: "fixture missing value at end", args: []string{"workspace", "--fixture"}, wantErr: true},
 		{name: "fixture missing value alone", args: []string{"--fixture"}, wantErr: true},
 		{name: "provider missing value", args: []string{"workspace", "--provider"}, wantErr: true},
@@ -32,7 +35,7 @@ func TestParseAnalyzeArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path, fixture, provider, yamlOut, err := parseAnalyzeArgs(tt.args)
+			path, fixture, provider, modelOut, yamlOut, err := parseAnalyzeArgs(tt.args)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("parseAnalyzeArgs(%v) error = nil, want error", tt.args)
@@ -50,6 +53,9 @@ func TestParseAnalyzeArgs(t *testing.T) {
 			}
 			if provider != tt.wantProvider {
 				t.Errorf("provider = %q, want %q", provider, tt.wantProvider)
+			}
+			if modelOut != tt.wantModelOut {
+				t.Errorf("modelOut = %q, want %q", modelOut, tt.wantModelOut)
 			}
 			if yamlOut != tt.wantYAML {
 				t.Errorf("yamlOutput = %v, want %v", yamlOut, tt.wantYAML)

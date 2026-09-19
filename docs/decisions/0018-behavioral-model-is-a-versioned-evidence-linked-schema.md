@@ -67,10 +67,10 @@ behavior validation. This ADR is the second stage.
 
 - #104 has a concrete schema to fill in: resolving a `Decision` means
   producing or updating the `Claim` its `Refs` point at.
-- #106 has an explicit, if partial, mapping from model fields to
-  `packages.Manifest` concepts (documented in
-  `docs/guides/compiling-existing-workspaces.md`), and a clear signal
-  (unresolved `Decision`s) for when it must refuse to compile.
+- #106 (`internal/compile`, `lineage compile`) implements the mapping from
+  model fields to `packages.Manifest` concepts documented in
+  `docs/guides/compiling-existing-workspaces.md`, and refuses to compile while
+  unresolved `Decision`s remain.
 - No artifact emission, receiver setup execution, or script execution is
   introduced by this stage.
 
@@ -81,10 +81,11 @@ behavior validation. This ADR is the second stage.
   rather than proceeding on stale evidence. This is a hard requirement,
   not a recommendation: `Passed() == false` on evidence drift means "do
   not compile," full stop.
-- #106 must implement the model-to-manifest mapping as code, not just
-  documentation.
-- #104 must resolve or explicitly carry forward every `Decision` before
-  compilation is allowed to proceed — silently dropping one would violate
-  ADR 0016 rule 3.
+- The model-to-manifest mapping is implemented as code in `internal/compile`
+  (#106).
+- Every `Decision` must be resolved before compilation proceeds: #104
+  surfaces them, the author resolves them by editing the saved model, and
+  `lineage compile` refuses while any remain — silently dropping one would
+  violate ADR 0016 rule 3.
 - `Gate` semantics (what actually runs a validation gate) are deferred to
   #109/#113.

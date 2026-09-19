@@ -6,7 +6,7 @@
 //
 // It never edits the source workspace, executes anything in it, or writes
 // package artifacts — this stage only produces a validated (or rejected)
-// BehavioralModel for a human, or a later compilation stage (#106), to act
+// BehavioralModel for a human, or `lineage compile`, to act
 // on.
 package analysis
 

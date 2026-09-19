@@ -115,7 +115,13 @@ type evidencePayload struct {
 // looks valid (it's the one still in "inventory") but describes content
 // that isn't what's actually there anymore.
 func buildSourceExcerpts(inv inventory.Inventory) ([]sourceExcerpt, error) {
-	total := 0
+	// The inventory is sent whole, so its metadata spends the same budget as
+	// the excerpts; checking it here means a workspace of very many tiny or
+	// empty files is refused before anything is read or serialized.
+	total := inventoryBytes(inv)
+	if total > MaxEvidenceBytes {
+		return nil, errEvidenceTooLarge(inv.Root, total)
+	}
 	excerpts := make([]sourceExcerpt, 0, len(inv.Entries))
 	for _, e := range inv.Entries {
 		if e.Size > maxSourceFileBytes {
@@ -140,6 +146,27 @@ func buildSourceExcerpts(inv inventory.Inventory) ([]sourceExcerpt, error) {
 		excerpts = append(excerpts, sourceExcerpt{Path: e.Path, Digest: e.Digest, Content: string(data), Truncated: truncated})
 	}
 	return excerpts, nil
+}
+
+// inventoryBytes estimates inv's serialized size without marshaling it: the
+// length of every string field plus a fixed per-object overhead covering JSON
+// keys and punctuation. It is a deterministic budget input, not an exact
+// size; the final len(evidence) check after marshaling remains as defense in
+// depth for escaping overhead.
+func inventoryBytes(inv inventory.Inventory) int {
+	const entryOverhead, citationOverhead = 160, 120
+	n := len(inv.Root)
+	cites := func(cs []inventory.Citation) {
+		for _, c := range cs {
+			n += citationOverhead + len(c.FromPath) + len(c.ToPath) + len(c.MatchKind) + len(c.AsWritten) + len(c.Snippet)
+		}
+	}
+	for _, e := range inv.Entries {
+		n += entryOverhead + len(e.Path) + len(e.Kind) + len(e.Reason) + len(e.Digest) + len(e.Language)
+		cites(e.Mentions)
+		cites(e.ReferencedBy)
+	}
+	return n
 }
 
 func errEvidenceTooLarge(root string, size int) error {

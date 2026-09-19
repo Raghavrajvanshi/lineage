@@ -216,3 +216,29 @@ func TestRemoteProviderRefusesOversizedEvidence(t *testing.T) {
 		t.Fatal("request was sent despite oversized evidence")
 	}
 }
+
+// TestRemoteProviderRefusesOversizedInventory: enough empty files that the
+// inventory metadata alone exceeds the budget must be refused before any
+// excerpt is built or request made - excerpts are zero bytes here, so only
+// the inventory budget can trip.
+func TestRemoteProviderRefusesOversizedInventory(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < MaxEvidenceBytes/100; i++ {
+		mustWrite(t, filepath.Join(root, "empty", fmt.Sprintf("f%05d.txt", i)), "")
+	}
+	inv, err := inventory.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inventoryBytes(inv); got <= MaxEvidenceBytes {
+		t.Fatalf("inventoryBytes = %d, test setup must exceed %d", got, MaxEvidenceBytes)
+	}
+	capture := &captureTransport{resp: textResponse("{}")}
+	_, err = RemoteProvider{Adapter: fakeAdapter{}, Model: "m", APIKey: "k", Client: &http.Client{Transport: capture}}.Analyze(context.Background(), inv)
+	if err == nil || !strings.Contains(err.Error(), "over the") {
+		t.Fatalf("err = %v, want evidence-too-large refusal", err)
+	}
+	if capture.called {
+		t.Fatal("request was sent despite oversized inventory")
+	}
+}

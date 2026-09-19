@@ -108,7 +108,7 @@ directory). Model, endpoint, and key variable are scoped to their provider: a
 saved `openai` profile is ignored when you pass `--provider anthropic`. The key
 is never a flag and never saved. `--endpoint` must be https unless it is localhost.
 
-**Privacy and cost.** Analysis sends workspace file contents (capped at 8 KiB per file and 512 KiB of evidence in total; a larger workspace is refused before anything is sent;
+**Privacy and cost.** Analysis sends workspace file contents (capped at 8 KiB per file and 512 KiB of evidence in total, counting the inventory metadata as well as file contents; a larger workspace is refused before anything is sent;
 files that look like credentials refuse the run) to the chosen provider and
 bills that provider's account per token. Before sending, `analyze` prints the
 provider and host and asks for confirmation; without a terminal (CI) it

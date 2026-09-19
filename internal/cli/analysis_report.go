@@ -45,7 +45,7 @@ type DecisionSummary struct {
 // see EvidenceLocation on StepSummary/DecisionSummary.
 type AnalysisReport struct {
 	// Provider distinguishes a real analysis run from a fixture-driven test
-	// run ("claude" vs "fixture:<path>") - both can produce an identically-
+	// run ("<provider name>" vs "fixture:<path>") - both can produce an identically-
 	// shaped clean report, so without this field a leftover --fixture flag
 	// could make a canned test response look like a trusted real analysis.
 	Provider              string            `yaml:"provider"`

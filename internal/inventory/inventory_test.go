@@ -1,6 +1,8 @@
 package inventory
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -939,5 +941,23 @@ func mustWrite(t *testing.T, path string, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDiscoverWithLimitRefusesDuringWalk(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 5; i++ {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%d.txt", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := DiscoverWithLimit(root, 5); err != nil {
+		t.Fatalf("limit == file count: err = %v, want nil", err)
+	}
+	if _, err := DiscoverWithLimit(root, 4); !errors.Is(err, ErrTooManyFiles) {
+		t.Fatalf("limit < file count: err = %v, want ErrTooManyFiles", err)
+	}
+	if _, err := DiscoverWithLimit(root, 0); err != nil {
+		t.Fatalf("limit 0 must mean unbounded: err = %v", err)
 	}
 }

@@ -81,10 +81,42 @@ skills, not the step's own skill.
    source workspace (the same directory, a parent, or a directory inside it).
 4. Read the notes before publishing.
 
-`lineage compile` needs no key. `lineage analyze` currently calls the
-Anthropic Messages API with `ANTHROPIC_API_KEY` and sends workspace content to
-Anthropic; `--fixture` runs without credentials. Provider-neutral analysis
-access is tracked in #288.
+`lineage compile` needs no key and is provider-neutral. `lineage analyze`
+has two modes:
+
+- **Manual / offline:** `--fixture response.json` (or writing `model.json`
+  yourself) sends nothing anywhere and needs no key.
+- **API key:** you name a provider and a model. There is no default, and the
+  provider is never guessed from a key or from the tool you built the
+  workflow with (`.claude/`, `.codex/`, and so on are independent of the
+  analysis provider).
+
+```
+export OPENAI_API_KEY=...   # the chosen provider's own key, env only
+lineage analyze ./workspace --provider openai --model <model-id> --model-out model.json
+```
+
+Providers: `anthropic` (`ANTHROPIC_API_KEY`), `openai` (`OPENAI_API_KEY`,
+Chat Completions), `openrouter` (`OPENROUTER_API_KEY`; a gateway, so content
+passes through OpenRouter to the upstream vendor, and only an OpenRouter key
+works). Provider, model, and endpoint resolve as flag, then
+`LINEAGE_ANALYSIS_PROVIDER` / `LINEAGE_ANALYSIS_MODEL` /
+`LINEAGE_ANALYSIS_ENDPOINT`, then an `analysis:` block (`provider`, `model`,
+`endpoint`, `key_env`) in the analyzed workspace's `.lineage/config.yaml`
+(found by walking up from the `<path>` you analyze, not from the current
+directory). Model, endpoint, and key variable are scoped to their provider: a
+saved `openai` profile is ignored when you pass `--provider anthropic`. The key
+is never a flag and never saved. `--endpoint` must be https unless it is localhost.
+
+**Privacy and cost.** Analysis sends workspace file contents (capped at 8 KiB per file, 2000 files per workspace (checked while walking, before anything is hashed), and 512 KiB of evidence in total, counting the inventory metadata as well as file contents; a larger workspace is refused before anything is sent;
+files that look like credentials refuse the run) to the chosen provider and
+bills that provider's account per token. Before sending, `analyze` prints the
+provider and host and asks for confirmation; without a terminal (CI) it
+refuses unless you pass `--yes`, and never prompts. Different providers can
+produce different models from the same workspace; only the model contract
+(schema, evidence checks, validation) is shared, so review the report either
+way. Using an existing agent subscription through its CLI is not supported
+yet.
 
 ## Errors And Notes
 

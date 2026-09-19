@@ -4,6 +4,15 @@ All notable changes to Lineage will be documented here.
 
 ## Unreleased
 
+- **Breaking:** `lineage analyze` no longer defaults to Claude or a built-in
+  model (#288). Choose a provider (`--provider anthropic|openai|openrouter`)
+  and `--model`; the key comes from that provider's environment variable.
+  Adapters are distinct, endpoints are overridable (`--endpoint`, https or
+  localhost only), an egress notice and confirmation (or `--yes` in CI)
+  precede any send, and `.lineage/config.yaml` may hold an `analysis:` default
+  (never the key). `--provider claude` is now `--provider anthropic --model
+  <id>`.
+
 - Instruction-risk scanning (#128): `lineage package validate`/`publish` now
   check skills, workflows, agents, policies, adapters, and
   `setup.files[].template` for risky agent-instruction patterns (prompt

@@ -219,3 +219,26 @@ func TestConfigComesFromAnalysisTargetNotCwd(t *testing.T) {
 		t.Fatalf("err = %v, want no provider (cwd config must not apply)", err)
 	}
 }
+
+// TestSavedProfileScopingCoversOpenRouter: the scoping is by provider name,
+// so it must hold for the gateway adapter in both directions.
+func TestSavedProfileScopingCoversOpenRouter(t *testing.T) {
+	ws := t.TempDir()
+	writeAnalysisConfig(t, ws, "  provider: openrouter\n  model: vendor/saved\n  endpoint: https://router.example/v1\n  key_env: SAVED_ROUTER_KEY\n")
+	vars := map[string]string{"SAVED_ROUTER_KEY": "r", "OPENAI_API_KEY": "o", "OPENROUTER_API_KEY": "r"}
+
+	notice, err := resolvedHost(t, analyzeOptions{path: ws}, vars)
+	if err != nil || !strings.Contains(notice, "router.example") || !strings.Contains(notice, "vendor/saved") {
+		t.Fatalf("notice = %q err = %v, want saved openrouter profile", notice, err)
+	}
+	notice, err = resolvedHost(t, analyzeOptions{path: ws, provider: "openai", model: "m"}, vars)
+	if err != nil || !strings.Contains(notice, "api.openai.com") || strings.Contains(notice, "router.example") {
+		t.Fatalf("notice = %q err = %v, want openai default host only", notice, err)
+	}
+	// And the reverse: a saved openai profile must not redirect openrouter.
+	writeAnalysisConfig(t, ws, "  provider: openai\n  endpoint: https://openai.example/v1\n  model: m\n")
+	notice, err = resolvedHost(t, analyzeOptions{path: ws, provider: "openrouter", model: "vendor/m"}, vars)
+	if err != nil || !strings.Contains(notice, "openrouter.ai") || strings.Contains(notice, "openai.example") {
+		t.Fatalf("notice = %q err = %v, want openrouter default host only", notice, err)
+	}
+}

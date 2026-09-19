@@ -39,6 +39,12 @@ const (
 	// semantic pass needs verbatim, and reading every large binary in a
 	// workspace into the prompt would be wasted cost for no signal.
 	maxSourceFileBytes = 256 << 10 // 256KB
+	// MaxEvidenceBytes bounds the whole outbound evidence payload (inventory
+	// plus every excerpt, as JSON). Per-file caps alone let a workspace of
+	// many small files produce an unbounded request; over this budget the run
+	// is refused, never silently trimmed, so what is sent is always what the
+	// author was told about.
+	MaxEvidenceBytes = 512 << 10 // 512KB
 
 	// requestTimeout bounds a single Analyze call end to end,
 	// mirroring registryRequestTimeout in internal/packages/registry.go —
@@ -108,7 +114,8 @@ type evidencePayload struct {
 // for that path - it would otherwise cite a citation with a digest that
 // looks valid (it's the one still in "inventory") but describes content
 // that isn't what's actually there anymore.
-func buildSourceExcerpts(inv inventory.Inventory) []sourceExcerpt {
+func buildSourceExcerpts(inv inventory.Inventory) ([]sourceExcerpt, error) {
+	total := 0
 	excerpts := make([]sourceExcerpt, 0, len(inv.Entries))
 	for _, e := range inv.Entries {
 		if e.Size > maxSourceFileBytes {
@@ -126,9 +133,17 @@ func buildSourceExcerpts(inv inventory.Inventory) []sourceExcerpt {
 			data = data[:maxSourceExcerptBytes]
 			truncated = true
 		}
+		total += len(data)
+		if total > MaxEvidenceBytes {
+			return nil, errEvidenceTooLarge(inv.Root, total)
+		}
 		excerpts = append(excerpts, sourceExcerpt{Path: e.Path, Digest: e.Digest, Content: string(data), Truncated: truncated})
 	}
-	return excerpts
+	return excerpts, nil
+}
+
+func errEvidenceTooLarge(root string, size int) error {
+	return fmt.Errorf("workspace %s produces at least %d bytes of evidence, over the %d-byte limit; nothing was sent. Analyze a smaller workspace or remove files that are not part of the workflow", root, size, MaxEvidenceBytes)
 }
 
 // truncateForError bounds how much of a raw response body is embedded in
@@ -237,13 +252,20 @@ func (p RemoteProvider) Analyze(ctx context.Context, inv inventory.Inventory) ([
 		return nil, fmt.Errorf("refusing to send workspace %s to %s: %d file(s) look like credentials (e.g. %s: %s); remove or exclude them before analyzing", inv.Root, name, len(findings), findings[0].Path, findings[0].Reason)
 	}
 
+	sources, err := buildSourceExcerpts(inv)
+	if err != nil {
+		return nil, err
+	}
 	evidence, err := json.Marshal(evidencePayload{
 		Inventory:             inv,
-		Sources:               buildSourceExcerpts(inv),
+		Sources:               sources,
 		SourceInventoryDigest: model.ComputeInventoryDigest(inv),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal inventory evidence: %w", err)
+	}
+	if len(evidence) > MaxEvidenceBytes {
+		return nil, errEvidenceTooLarge(inv.Root, len(evidence))
 	}
 
 	endpoint := p.Endpoint

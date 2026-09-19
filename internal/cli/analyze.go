@@ -192,18 +192,25 @@ func resolveAnalysisProvider(o analyzeOptions, env analysisEnv) (analysis.Provid
 		return analysis.FixtureProvider{Response: data}, "fixture:" + o.fixturePath, nil
 	}
 
+	// Saved config comes from the analysis target's workspace, not the
+	// process working directory: `lineage analyze ~/customer-app` run from
+	// another repo must not apply that repo's provider settings.
 	var saved config.AnalysisConfig
-	if cwd, err := os.Getwd(); err == nil {
-		found, err := config.FindProjectConfig(cwd)
-		switch {
-		case err == nil:
-			saved = found.Config.Analysis
-		case !errors.Is(err, config.ErrProjectConfigNotFound):
-			return nil, "", err
-		}
+	found, err := config.FindProjectConfig(filepath.Clean(o.path))
+	switch {
+	case err == nil:
+		saved = found.Config.Analysis
+	case !errors.Is(err, config.ErrProjectConfigNotFound):
+		return nil, "", err
 	}
 
-	name := firstNonEmpty(o.provider, env.getenv("LINEAGE_ANALYSIS_PROVIDER"), saved.Provider)
+	// Provider is chosen first; every other setting is then scoped to it. A
+	// layer's model/endpoint/key_env only applies when that layer's provider
+	// is the one selected (saved values need an exact match, env values may
+	// omit the provider), so an --provider override never inherits another
+	// provider's saved endpoint or credential variable.
+	envProvider := env.getenv("LINEAGE_ANALYSIS_PROVIDER")
+	name := firstNonEmpty(o.provider, envProvider, saved.Provider)
 	if name == "" {
 		return nil, "", fmt.Errorf("no analysis provider selected: pass --provider (one of: %s), set LINEAGE_ANALYSIS_PROVIDER, or use --fixture", strings.Join(analysis.AdapterNames(), ", "))
 	}
@@ -211,11 +218,18 @@ func resolveAnalysisProvider(o analyzeOptions, env analysisEnv) (analysis.Provid
 	if !ok {
 		return nil, "", fmt.Errorf("unknown analysis provider %q (one of: %s)", name, strings.Join(analysis.AdapterNames(), ", "))
 	}
-	model := firstNonEmpty(o.model, env.getenv("LINEAGE_ANALYSIS_MODEL"), saved.Model)
+	if saved.Provider != name {
+		saved = config.AnalysisConfig{}
+	}
+	var envModel, envEndpoint string
+	if envProvider == "" || envProvider == name {
+		envModel, envEndpoint = env.getenv("LINEAGE_ANALYSIS_MODEL"), env.getenv("LINEAGE_ANALYSIS_ENDPOINT")
+	}
+	model := firstNonEmpty(o.model, envModel, saved.Model)
 	if model == "" {
 		return nil, "", fmt.Errorf("no model selected for provider %q: pass --model or set LINEAGE_ANALYSIS_MODEL", name)
 	}
-	endpoint := firstNonEmpty(o.endpoint, env.getenv("LINEAGE_ANALYSIS_ENDPOINT"), saved.Endpoint, adapter.DefaultEndpoint())
+	endpoint := firstNonEmpty(o.endpoint, envEndpoint, saved.Endpoint, adapter.DefaultEndpoint())
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Host == "" {
 		return nil, "", fmt.Errorf("invalid analysis endpoint %q", endpoint)

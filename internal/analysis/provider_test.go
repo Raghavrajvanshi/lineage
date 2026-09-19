@@ -3,6 +3,7 @@ package analysis
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -182,10 +183,36 @@ func TestBuildSourceExcerptsOmitsDriftedFile(t *testing.T) {
 	// CLAUDE.md is now stale.
 	mustWrite(t, path, "# Instructions\n\nRun scripts/deploy.sh to deploy.\n\nAlso run scripts/release.sh.\n")
 
-	excerpts := buildSourceExcerpts(inv)
+	excerpts, err := buildSourceExcerpts(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, ex := range excerpts {
 		if ex.Path == "CLAUDE.md" {
 			t.Fatalf("buildSourceExcerpts included drifted file %q, want it omitted", ex.Path)
 		}
+	}
+}
+
+// TestRemoteProviderRefusesOversizedEvidence: many small files pass every
+// per-file cap but must still trip the total budget before anything is sent.
+func TestRemoteProviderRefusesOversizedEvidence(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "CLAUDE.md"), "# Instructions\n")
+	chunk := strings.Repeat("x", 4<<10)
+	for i := 0; i < MaxEvidenceBytes/(4<<10)+8; i++ {
+		mustWrite(t, filepath.Join(root, "docs", fmt.Sprintf("f%04d.md", i)), chunk)
+	}
+	inv, err := inventory.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := &captureTransport{resp: textResponse("{}")}
+	_, err = RemoteProvider{Adapter: fakeAdapter{}, Model: "m", APIKey: "k", Client: &http.Client{Transport: capture}}.Analyze(context.Background(), inv)
+	if err == nil || !strings.Contains(err.Error(), "over the") {
+		t.Fatalf("err = %v, want evidence-too-large refusal", err)
+	}
+	if capture.called {
+		t.Fatal("request was sent despite oversized evidence")
 	}
 }

@@ -130,3 +130,92 @@ func TestCoreHasNoVendorCoupling(t *testing.T) {
 		}
 	}
 }
+
+func writeAnalysisConfig(t *testing.T, dir, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, ".lineage"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".lineage", "config.yaml"), []byte("schema: 1\nanalysis:\n"+body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func resolvedHost(t *testing.T, o analyzeOptions, vars map[string]string) (string, error) {
+	t.Helper()
+	env, stderr := testEnv(vars, false, "")
+	o.yes = true
+	_, _, err := resolveAnalysisProvider(o, env)
+	return stderr.String(), err
+}
+
+// TestSavedProfileIsScopedToItsProvider: a saved openai profile must not
+// leak its endpoint, key env or model into a run that selects anthropic.
+func TestSavedProfileIsScopedToItsProvider(t *testing.T) {
+	ws := t.TempDir()
+	writeAnalysisConfig(t, ws, "  provider: openai\n  model: saved-model\n  endpoint: https://openai.example/v1\n  key_env: SAVED_OPENAI_KEY\n")
+	vars := map[string]string{"ANTHROPIC_API_KEY": "a", "SAVED_OPENAI_KEY": "o", "OPENAI_API_KEY": "o"}
+
+	// Override provider: saved model is not inherited either.
+	if _, err := resolvedHost(t, analyzeOptions{path: ws, provider: "anthropic"}, vars); err == nil || !strings.Contains(err.Error(), "no model selected") {
+		t.Fatalf("err = %v, want no model (saved openai model must not apply to anthropic)", err)
+	}
+	notice, err := resolvedHost(t, analyzeOptions{path: ws, provider: "anthropic", model: "m"}, vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(notice, "api.anthropic.com") || strings.Contains(notice, "openai.example") {
+		t.Fatalf("notice = %q, want anthropic default host only", notice)
+	}
+	// The saved key_env must not be used for anthropic: only its own env var counts.
+	if _, err := resolvedHost(t, analyzeOptions{path: ws, provider: "anthropic", model: "m"}, map[string]string{"SAVED_OPENAI_KEY": "o"}); err == nil || !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+		t.Fatalf("err = %v, want missing ANTHROPIC_API_KEY", err)
+	}
+	// Same provider as saved: the profile applies.
+	notice, err = resolvedHost(t, analyzeOptions{path: ws}, vars)
+	if err != nil || !strings.Contains(notice, "openai.example") || !strings.Contains(notice, "saved-model") {
+		t.Fatalf("notice = %q err = %v, want saved openai profile", notice, err)
+	}
+}
+
+// TestEnvProfileIsScopedToItsProvider: LINEAGE_ANALYSIS_ENDPOINT set for one
+// provider must not redirect a run that selects another.
+func TestEnvProfileIsScopedToItsProvider(t *testing.T) {
+	vars := map[string]string{
+		"LINEAGE_ANALYSIS_PROVIDER": "openai", "LINEAGE_ANALYSIS_MODEL": "env-model",
+		"LINEAGE_ANALYSIS_ENDPOINT": "https://openai.example/v1", "ANTHROPIC_API_KEY": "a",
+	}
+	wd, _ := os.Getwd()
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(wd) })
+	notice, err := resolvedHost(t, analyzeOptions{provider: "anthropic", model: "m"}, vars)
+	if err != nil || !strings.Contains(notice, "api.anthropic.com") || strings.Contains(notice, "openai.example") {
+		t.Fatalf("notice = %q err = %v, want anthropic default host", notice, err)
+	}
+}
+
+// TestConfigComesFromAnalysisTargetNotCwd: config next to the target wins
+// over config in the directory the command was run from.
+func TestConfigComesFromAnalysisTargetNotCwd(t *testing.T) {
+	cwd, target := t.TempDir(), t.TempDir()
+	writeAnalysisConfig(t, cwd, "  provider: openai\n  model: cwd-model\n")
+	writeAnalysisConfig(t, target, "  provider: anthropic\n  model: target-model\n")
+	wd, _ := os.Getwd()
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(wd) })
+
+	vars := map[string]string{"OPENAI_API_KEY": "o", "ANTHROPIC_API_KEY": "a"}
+	notice, err := resolvedHost(t, analyzeOptions{path: target}, vars)
+	if err != nil || !strings.Contains(notice, "anthropic") || !strings.Contains(notice, "target-model") || strings.Contains(notice, "cwd-model") {
+		t.Fatalf("notice = %q err = %v, want target config", notice, err)
+	}
+	// A target with no config must not fall back to the cwd's.
+	bare := t.TempDir()
+	if _, err := resolvedHost(t, analyzeOptions{path: bare}, vars); err == nil || !strings.Contains(err.Error(), "no analysis provider selected") {
+		t.Fatalf("err = %v, want no provider (cwd config must not apply)", err)
+	}
+}

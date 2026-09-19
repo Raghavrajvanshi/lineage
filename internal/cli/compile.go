@@ -39,6 +39,11 @@ func runCompile(_ context.Context, args []string, stdout, stderr io.Writer) erro
 		return err
 	}
 
+	if err := compile.CheckOutputPath(source, out); err != nil {
+		fmt.Fprintln(stderr, err)
+		return err
+	}
+
 	data, err := os.ReadFile(modelPath)
 	if err != nil {
 		fmt.Fprintln(stderr, err)

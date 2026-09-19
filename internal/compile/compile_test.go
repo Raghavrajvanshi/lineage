@@ -421,3 +421,48 @@ func TestForceReplaceKeepsOldPackageWhenMoveFails(t *testing.T) {
 		t.Errorf("staging or backup directories left behind: %d entries", len(entries))
 	}
 }
+
+func TestCheckOutputPathRejectsOverlap(t *testing.T) {
+	ws := t.TempDir()
+	inside := filepath.Join(ws, "dist")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sibling := filepath.Join(filepath.Dir(ws), filepath.Base(ws)+"-pkg")
+
+	for name, out := range map[string]string{
+		"same directory":           ws,
+		"same directory, dotted":   filepath.Join(ws, "."),
+		"existing dir inside":      inside,
+		"missing dir inside":       filepath.Join(ws, "new", "pkg"),
+		"parent of the workspace":  filepath.Dir(ws),
+		"grandparent of workspace": filepath.Dir(filepath.Dir(ws)),
+	} {
+		if err := CheckOutputPath(ws, out); err == nil {
+			t.Errorf("%s: CheckOutputPath(%q) = nil, want overlap error", name, out)
+		}
+	}
+	if err := CheckOutputPath(ws, sibling); err != nil {
+		t.Errorf("sibling directory rejected: %v", err)
+	}
+	if err := CheckOutputPath(ws, filepath.Join(t.TempDir(), "pkg")); err != nil {
+		t.Errorf("unrelated directory rejected: %v", err)
+	}
+}
+
+func TestCheckOutputPathSeesThroughSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	ws := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(ws, alias); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	if err := CheckOutputPath(ws, alias); err == nil {
+		t.Error("symlink alias of the workspace must be rejected")
+	}
+	if err := CheckOutputPath(ws, filepath.Join(alias, "pkg")); err == nil {
+		t.Error("directory inside a symlink alias of the workspace must be rejected")
+	}
+}

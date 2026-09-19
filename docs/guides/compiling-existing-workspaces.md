@@ -77,7 +77,8 @@ skills, not the step's own skill.
 3. `lineage compile model.json ./workspace --out ./pkg`. The package is built
    in a staging directory, checked with `lineage package validate` (including
    the secret scan), then moved into place. `--force` replaces only an
-   existing Lineage package.
+   existing Lineage package, and the output directory must not overlap the
+   source workspace (the same directory, a parent, or a directory inside it).
 4. Read the notes before publishing.
 
 `lineage compile` needs no key. `lineage analyze` currently calls the
@@ -90,7 +91,8 @@ access is tracked in #288.
 Compile refuses (errors) on: unresolved decisions; a model that no longer
 validates against the workspace; a cited file whose digest changed; zero
 steps; invalid step ids or package name; unsafe paths, symlinks, or two files
-copied to the same destination; a generated package failing validation.
+copied to the same destination; an output directory that overlaps the source
+workspace; a generated package failing validation.
 
 Notes never block: a tool or reference whose inventory kind disagrees with how
 the model used it; workspace files no claim or evidence mentions ("not

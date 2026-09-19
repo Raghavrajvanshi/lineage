@@ -93,3 +93,74 @@ func Write(res Result, outDir string, force bool) (packages.ValidateReport, erro
 	}
 	return report, nil
 }
+
+// CheckOutputPath refuses an output directory that overlaps the source
+// workspace: the same directory, an ancestor of it, or a directory inside it.
+// --force replaces an existing output package, so an overlapping target would
+// let a compile delete the workspace it was analyzing, and a target inside the
+// workspace would feed the generated package back into the next analysis.
+// Paths are compared after resolving symlinks, and by file identity, so a
+// symlink alias or a differently cased spelling of the same directory is caught
+// too. An output that does not exist yet is resolved through its nearest
+// existing ancestor.
+func CheckOutputPath(source, out string) error {
+	src, err := canonicalPath(source)
+	if err != nil {
+		return err
+	}
+	dst, err := canonicalPath(out)
+	if err != nil {
+		return err
+	}
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return nil
+	}
+	dstInfo, dstErr := os.Stat(dst)
+
+	if dstErr == nil {
+		for p := src; ; p = filepath.Dir(p) {
+			if info, err := os.Stat(p); err == nil && os.SameFile(info, dstInfo) {
+				return fmt.Errorf("output %s contains or is the source workspace %s; choose an output directory outside the workspace", out, source)
+			}
+			if filepath.Dir(p) == p {
+				break
+			}
+		}
+	}
+	for p := dst; ; p = filepath.Dir(p) {
+		if info, err := os.Stat(p); err == nil && os.SameFile(info, srcInfo) {
+			return fmt.Errorf("output %s is inside the source workspace %s; choose an output directory outside the workspace", out, source)
+		}
+		if filepath.Dir(p) == p {
+			break
+		}
+	}
+	return nil
+}
+
+// canonicalPath returns p as an absolute path with symlinks resolved. The part
+// of p that does not exist yet is appended unresolved to its nearest existing
+// ancestor.
+func canonicalPath(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", p, err)
+	}
+	rest := ""
+	for cur := abs; ; {
+		resolved, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			return filepath.Join(resolved, rest), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve %s: %w", p, err)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs, nil
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
+}

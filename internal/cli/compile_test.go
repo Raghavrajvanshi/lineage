@@ -139,3 +139,33 @@ func TestAnalyzeCompileValidateEndToEnd(t *testing.T) {
 		t.Error("blocked compile created the output directory")
 	}
 }
+
+// TestCompileForceCannotReplaceTheSourceWorkspace is the regression test for
+// --force turning the analyzed workspace into the output target: with a source
+// that is already a Lineage package, replacing it would delete every source
+// file the compiled package does not represent.
+func TestCompileForceCannotReplaceTheSourceWorkspace(t *testing.T) {
+	t.Setenv(config.HomeEnv, t.TempDir())
+	ws := t.TempDir()
+	write(t, ws, "lineage.yaml", "name: existing\nversion: 0.1.0\n", 0o644)
+	write(t, ws, "notes/keep-me.md", "not represented in any package\n", 0o644)
+	modelPath := filepath.Join(t.TempDir(), "model.json")
+	write(t, filepath.Dir(modelPath), "model.json", "{}", 0o644)
+
+	for name, out := range map[string]string{
+		"same directory": ws,
+		"parent":         filepath.Dir(ws),
+		"inside":         filepath.Join(ws, "dist"),
+	} {
+		var stdout, stderr bytes.Buffer
+		err := Execute(context.Background(), []string{"compile", modelPath, ws, "--out", out, "--force"}, nil, &stdout, &stderr)
+		if err == nil || !strings.Contains(stderr.String(), "source workspace") {
+			t.Errorf("%s: err = %v, stderr = %q, want overlap refusal", name, err, stderr.String())
+		}
+	}
+	for _, p := range []string{"lineage.yaml", "notes/keep-me.md"} {
+		if _, err := os.Stat(filepath.Join(ws, p)); err != nil {
+			t.Errorf("source file %s was lost: %v", p, err)
+		}
+	}
+}

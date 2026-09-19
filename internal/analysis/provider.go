@@ -45,6 +45,11 @@ const (
 	// is refused, never silently trimmed, so what is sent is always what the
 	// author was told about.
 	MaxEvidenceBytes = 512 << 10 // 512KB
+	// MaxInventoryEntries caps the file count at the earliest stage, the
+	// directory walk, before anything is hashed or read. Each entry costs at
+	// least ~160 bytes of serialized inventory, so this keeps the inventory
+	// alone well inside MaxEvidenceBytes and leaves room for excerpts.
+	MaxInventoryEntries = 2000
 
 	// requestTimeout bounds a single Analyze call end to end,
 	// mirroring registryRequestTimeout in internal/packages/registry.go —

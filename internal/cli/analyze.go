@@ -44,7 +44,14 @@ func runAnalyze(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return err
 	}
 
-	inv, err := inventory.Discover(filepath.Clean(opts.path))
+	// Bound the workspace at the walk, before hashing or citation scanning,
+	// only when a live provider will receive it; --fixture never sends
+	// anything, so it keeps the unbounded inventory.
+	limit := analysis.MaxInventoryEntries
+	if opts.fixturePath != "" {
+		limit = 0
+	}
+	inv, err := inventory.DiscoverWithLimit(filepath.Clean(opts.path), limit)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return err

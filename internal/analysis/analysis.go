@@ -27,7 +27,7 @@ import (
 // digestOf hashes data the same way inventory.Entry.Digest is computed
 // ("sha256:<hex>"), so freshly re-read file content can be compared
 // directly against the digest inventory.Discover recorded for it. Shared
-// by claude.go's buildSourceExcerpts and this file's verifyQuotedEvidence
+// by provider.go's buildSourceExcerpts and this file's verifyQuotedEvidence
 // - both need to detect a file that's changed on disk since discovery ran.
 func digestOf(data []byte) string {
 	sum := sha256.Sum256(data)

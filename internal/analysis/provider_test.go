@@ -15,7 +15,7 @@ import (
 
 // captureTransport is a fake http.RoundTripper that records the outgoing
 // request body (if any request is made at all) and returns a canned
-// response, so tests can inspect exactly what ClaudeProvider sends without
+// response, so tests can inspect exactly what RemoteProvider sends without
 // a live network call or a real API key.
 type captureTransport struct {
 	called       bool
@@ -35,8 +35,30 @@ func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return c.resp, nil
 }
 
+// fakeAdapter is a vendor-free Adapter: it proves RemoteProvider needs
+// nothing vendor-specific from core.
+type fakeAdapter struct{}
+
+func (fakeAdapter) Name() string            { return "fake" }
+func (fakeAdapter) CredentialEnv() string   { return "FAKE_API_KEY" }
+func (fakeAdapter) DefaultEndpoint() string { return "https://fake.invalid/v1" }
+func (fakeAdapter) Send(ctx context.Context, req Request) (string, error) {
+	body, err := PostJSON(ctx, req, nil, map[string]any{
+		"model":    req.Model,
+		"messages": []map[string]string{{"role": "user", "content": req.User}},
+	})
+	if err != nil {
+		return "", err
+	}
+	var parsed struct {
+		Text string `json:"text"`
+	}
+	err = json.Unmarshal(body, &parsed)
+	return parsed.Text, err
+}
+
 func textResponse(text string) *http.Response {
-	body := `{"content":[{"type":"text","text":` + jsonQuote(text) + `}]}`
+	body := `{"text":` + jsonQuote(text) + `}`
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(strings.NewReader(body)),
@@ -49,12 +71,12 @@ func jsonQuote(s string) string {
 	return string(b)
 }
 
-// TestClaudeProviderRefusesSecretBearingWorkspace covers the review
+// TestRemoteProviderRefusesSecretBearingWorkspace covers the review
 // finding that buildSourceExcerpts sent credential file content (e.g.
 // .env) to the API verbatim. Analyze must refuse before any request is
 // made, not filter the file out silently - the capture transport's
 // `called` field proves no network call happened at all.
-func TestClaudeProviderRefusesSecretBearingWorkspace(t *testing.T) {
+func TestRemoteProviderRefusesSecretBearingWorkspace(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "CLAUDE.md"), "# Instructions\n")
 	mustWrite(t, filepath.Join(root, ".env"), "API_KEY=super-secret-value\n")
@@ -64,7 +86,7 @@ func TestClaudeProviderRefusesSecretBearingWorkspace(t *testing.T) {
 	}
 
 	capture := &captureTransport{resp: textResponse("{}")}
-	p := ClaudeProvider{APIKey: "test-key", Client: &http.Client{Transport: capture}}
+	p := RemoteProvider{Adapter: fakeAdapter{}, Model: "m", APIKey: "test-key", Client: &http.Client{Transport: capture}}
 
 	_, err = p.Analyze(context.Background(), inv)
 	if err == nil {
@@ -78,13 +100,13 @@ func TestClaudeProviderRefusesSecretBearingWorkspace(t *testing.T) {
 	}
 }
 
-// TestClaudeProviderRequestIncludesSourceInventoryDigest covers the review
+// TestRemoteProviderRequestIncludesSourceInventoryDigest covers the review
 // finding that the system prompt required a source_inventory_digest value
 // the payload never actually supplied. Intercepts the outgoing request via
 // a fake RoundTripper (no real network call, no URL override needed) and
 // asserts the nested evidencePayload carries the same digest
 // model.Validate will later compare against.
-func TestClaudeProviderRequestIncludesSourceInventoryDigest(t *testing.T) {
+func TestRemoteProviderRequestIncludesSourceInventoryDigest(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "CLAUDE.md"), "# Instructions\n")
 	inv, err := inventory.Discover(root)
@@ -94,7 +116,7 @@ func TestClaudeProviderRequestIncludesSourceInventoryDigest(t *testing.T) {
 	wantDigest := model.ComputeInventoryDigest(inv)
 
 	capture := &captureTransport{resp: textResponse("{}")}
-	p := ClaudeProvider{APIKey: "test-key", Client: &http.Client{Transport: capture}}
+	p := RemoteProvider{Adapter: fakeAdapter{}, Model: "m", APIKey: "test-key", Client: &http.Client{Transport: capture}}
 
 	if _, err := p.Analyze(context.Background(), inv); err != nil {
 		t.Fatalf("Analyze() error = %v", err)
@@ -124,19 +146,21 @@ func TestClaudeProviderRequestIncludesSourceInventoryDigest(t *testing.T) {
 	}
 }
 
-// TestDefaultClaudeClientHasBoundedTimeout covers the review finding that
-// ClaudeProvider fell back to http.DefaultClient (Timeout: 0, unbounded)
-// whenever no Client was injected, so a hung or slow-drip response could
-// block Analyze forever - runAnalyze passes its command context through
-// without adding a deadline of its own. Mirrors registryRequestTimeout in
-// internal/packages/registry.go, the same fix for the same failure mode.
-func TestDefaultClaudeClientHasBoundedTimeout(t *testing.T) {
-	client := defaultClaudeClient()
-	if client.Timeout != claudeRequestTimeout {
-		t.Fatalf("defaultClaudeClient().Timeout = %v, want %v", client.Timeout, claudeRequestTimeout)
+func TestRegistryListsAndRejectsUnknown(t *testing.T) {
+	Register(fakeAdapter{})
+	if _, ok := LookupAdapter("fake"); !ok {
+		t.Fatal("LookupAdapter(fake) not found after Register")
 	}
-	if client.Timeout <= 0 {
-		t.Fatal("defaultClaudeClient().Timeout is unbounded, want a positive bound")
+	if _, ok := LookupAdapter("nope"); ok {
+		t.Fatal("LookupAdapter(nope) found, want miss")
+	}
+}
+
+func TestRemoteProviderMissingKey(t *testing.T) {
+	t.Setenv("FAKE_API_KEY", "")
+	_, err := RemoteProvider{Adapter: fakeAdapter{}, Model: "m"}.Analyze(context.Background(), inventory.Inventory{})
+	if err == nil || !strings.Contains(err.Error(), "FAKE_API_KEY") {
+		t.Fatalf("err = %v, want missing-key error naming FAKE_API_KEY", err)
 	}
 }
 

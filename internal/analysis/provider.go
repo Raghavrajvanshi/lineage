@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,13 +19,6 @@ import (
 )
 
 const (
-	claudeAPIURL      = "https://api.anthropic.com/v1/messages"
-	claudeModel       = "claude-opus-5"
-	claudeAPIVersion  = "2023-06-01"
-	claudeMaxTokens   = 8192
-	claudeAPIKeyEnv   = "ANTHROPIC_API_KEY"
-	claudeContentType = "application/json"
-
 	// maxResponseBytes bounds how much of the HTTP response body is ever
 	// read, success or error - a misbehaving endpoint or proxy otherwise
 	// has no limit on how much memory a single Analyze call can force this
@@ -46,36 +40,15 @@ const (
 	// workspace into the prompt would be wasted cost for no signal.
 	maxSourceFileBytes = 256 << 10 // 256KB
 
-	// claudeRequestTimeout bounds a single Analyze call end to end,
+	// requestTimeout bounds a single Analyze call end to end,
 	// mirroring registryRequestTimeout in internal/packages/registry.go —
 	// the same fix for the same failure mode: http.DefaultClient's
 	// Timeout is zero (unbounded), and runAnalyze passes its command
 	// context straight through without adding a deadline of its own, so a
 	// hung or slow-drip response would otherwise block `lineage analyze`
 	// indefinitely.
-	claudeRequestTimeout = 60 * time.Second
+	requestTimeout = 60 * time.Second
 )
-
-// ClaudeProvider calls the Anthropic Messages API directly over HTTP.
-// Deliberately net/http + encoding/json rather than anthropic-sdk-go: this
-// needs exactly one request/response shape — a single non-streaming call —
-// which the standard library covers completely, without vendoring a large
-// SDK and its transitive dependencies (this repo vendors its one existing
-// dependency, gopkg.in/yaml.v3, explicitly) for one call site.
-type ClaudeProvider struct {
-	// APIKey overrides the ANTHROPIC_API_KEY environment variable when set.
-	APIKey string
-	// Client overrides the bounded default client (see
-	// defaultClaudeClient) when set, e.g. for a test double.
-	Client *http.Client
-}
-
-// defaultClaudeClient is used whenever ClaudeProvider.Client is unset —
-// never http.DefaultClient directly, whose zero Timeout would let a single
-// Analyze call block indefinitely on a hung or slow-drip response.
-func defaultClaudeClient() *http.Client {
-	return &http.Client{Timeout: claudeRequestTimeout}
-}
 
 // analysisSystemPrompt constrains the model to emit exactly one
 // model.BehavioralModel as JSON, grounded strictly in the inventory and
@@ -158,104 +131,6 @@ func buildSourceExcerpts(inv inventory.Inventory) []sourceExcerpt {
 	return excerpts
 }
 
-func (c ClaudeProvider) Analyze(ctx context.Context, inv inventory.Inventory) ([]byte, error) {
-	apiKey := c.APIKey
-	if apiKey == "" {
-		apiKey = os.Getenv(claudeAPIKeyEnv)
-	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("no Claude API key: set %s or ClaudeProvider.APIKey", claudeAPIKeyEnv)
-	}
-
-	// Refuse outright rather than silently filtering: packages.Validate/
-	// export.go already treat any ScanForSecrets finding as a hard blocker
-	// ("must not ship something with an unresolved secret finding"), and a
-	// workspace containing a credential file is the same situation here -
-	// this call is about to send file content to an external API, so any
-	// finding must stop that before it happens, not just quietly work
-	// around it. FixtureProvider never makes a network call, so it isn't
-	// subject to this check - the risk is specific to sending data
-	// externally.
-	if findings, err := packages.ScanForSecrets(inv.Root); err != nil {
-		return nil, fmt.Errorf("scan workspace for secrets before sending to Claude: %w", err)
-	} else if len(findings) > 0 {
-		return nil, fmt.Errorf("refusing to send workspace %s to Claude: %d file(s) look like credentials (e.g. %s: %s); remove or exclude them before analyzing", inv.Root, len(findings), findings[0].Path, findings[0].Reason)
-	}
-
-	evidence, err := json.Marshal(evidencePayload{
-		Inventory:             inv,
-		Sources:               buildSourceExcerpts(inv),
-		SourceInventoryDigest: model.ComputeInventoryDigest(inv),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal inventory evidence: %w", err)
-	}
-
-	reqBody, err := json.Marshal(map[string]any{
-		"model":      claudeModel,
-		"max_tokens": claudeMaxTokens,
-		"system":     analysisSystemPrompt,
-		"messages": []map[string]string{
-			{"role": "user", "content": string(evidence)},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, claudeAPIURL, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("content-type", claudeContentType)
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", claudeAPIVersion)
-
-	client := c.Client
-	if client == nil {
-		client = defaultClaudeClient()
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("call Claude: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return nil, fmt.Errorf("read Claude response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("claude API returned %d: %s", resp.StatusCode, truncateForError(body))
-	}
-
-	var parsed struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("parse Claude response: %w", err)
-	}
-
-	// The Messages API can split one response across multiple text content
-	// blocks; returning only the first would silently truncate a JSON
-	// document that happened to span more than one block. Concatenate
-	// every text block instead, so a split response is reassembled before
-	// model.ParseModel ever sees it.
-	var text strings.Builder
-	for _, block := range parsed.Content {
-		if block.Type == "text" {
-			text.WriteString(block.Text)
-		}
-	}
-	if text.Len() == 0 {
-		return nil, fmt.Errorf("claude response had no text content")
-	}
-	return []byte(stripJSONFence(text.String())), nil
-}
-
 // truncateForError bounds how much of a raw response body is embedded in
 // an error message - maxResponseBytes already bounds what's read into
 // memory, but that alone still permits echoing megabytes of
@@ -280,4 +155,151 @@ func stripJSONFence(s string) string {
 	s = strings.TrimPrefix(s, "```")
 	s = strings.TrimSuffix(s, "```")
 	return strings.TrimSpace(s)
+}
+
+// Request is everything an Adapter needs for one call. Core resolves every
+// field; an adapter only translates it into its vendor's wire format.
+type Request struct {
+	Endpoint string
+	Model    string
+	APIKey   string
+	System   string
+	User     string
+	Client   *http.Client
+}
+
+// Adapter is one analysis provider's wire protocol: request/response
+// translation only. Core owns the prompt, evidence, caps, secret scan and
+// output validation; an Adapter owns its credential env var, default
+// endpoint and errors, and returns the model's raw text.
+type Adapter interface {
+	Name() string
+	// CredentialEnv is the environment variable holding this provider's key.
+	CredentialEnv() string
+	DefaultEndpoint() string
+	Send(ctx context.Context, req Request) (string, error)
+}
+
+var adapters = map[string]Adapter{}
+
+// Register makes a available under a.Name(). Adapters call it from init().
+func Register(a Adapter) { adapters[a.Name()] = a }
+
+// LookupAdapter returns the adapter registered under name.
+func LookupAdapter(name string) (Adapter, bool) {
+	a, ok := adapters[name]
+	return a, ok
+}
+
+// AdapterNames lists registered adapter names, sorted.
+func AdapterNames() []string {
+	names := make([]string, 0, len(adapters))
+	for n := range adapters {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// RemoteProvider sends workspace evidence to a registered Adapter's API.
+type RemoteProvider struct {
+	Adapter  Adapter
+	Model    string
+	Endpoint string // empty: Adapter.DefaultEndpoint()
+	// APIKey overrides the adapter's credential env var when set.
+	APIKey string
+	// Client overrides the bounded default client when set.
+	Client *http.Client
+}
+
+func (p RemoteProvider) Analyze(ctx context.Context, inv inventory.Inventory) ([]byte, error) {
+	name := p.Adapter.Name()
+	apiKey := p.APIKey
+	if apiKey == "" {
+		apiKey = os.Getenv(p.Adapter.CredentialEnv())
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("no %s API key: set %s", name, p.Adapter.CredentialEnv())
+	}
+
+	// Refuse outright rather than silently filtering: packages.Validate/
+	// export.go already treat any ScanForSecrets finding as a hard blocker
+	// ("must not ship something with an unresolved secret finding"), and a
+	// workspace containing a credential file is the same situation here -
+	// this call is about to send file content to an external API, so any
+	// finding must stop that before it happens, not just quietly work
+	// around it. FixtureProvider never makes a network call, so it isn't
+	// subject to this check - the risk is specific to sending data
+	// externally.
+	if findings, err := packages.ScanForSecrets(inv.Root); err != nil {
+		return nil, fmt.Errorf("scan workspace for secrets before sending to %s: %w", name, err)
+	} else if len(findings) > 0 {
+		return nil, fmt.Errorf("refusing to send workspace %s to %s: %d file(s) look like credentials (e.g. %s: %s); remove or exclude them before analyzing", inv.Root, name, len(findings), findings[0].Path, findings[0].Reason)
+	}
+
+	evidence, err := json.Marshal(evidencePayload{
+		Inventory:             inv,
+		Sources:               buildSourceExcerpts(inv),
+		SourceInventoryDigest: model.ComputeInventoryDigest(inv),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal inventory evidence: %w", err)
+	}
+
+	endpoint := p.Endpoint
+	if endpoint == "" {
+		endpoint = p.Adapter.DefaultEndpoint()
+	}
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: requestTimeout}
+	}
+	text, err := p.Adapter.Send(ctx, Request{
+		Endpoint: endpoint,
+		Model:    p.Model,
+		APIKey:   apiKey,
+		System:   analysisSystemPrompt,
+		User:     string(evidence),
+		Client:   client,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	if text == "" {
+		return nil, fmt.Errorf("%s response had no text content", name)
+	}
+	return []byte(stripJSONFence(text)), nil
+}
+
+// PostJSON is the shared low-level transport for adapters: POST body to
+// req.Endpoint with headers, read at most maxResponseBytes, and turn a
+// non-200 into an error with a bounded body excerpt. It knows nothing about
+// any vendor's payload shape.
+func PostJSON(ctx context.Context, req Request, headers map[string]string, body any) ([]byte, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, req.Endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	hr.Header.Set("content-type", "application/json")
+	for k, v := range headers {
+		hr.Header.Set(k, v)
+	}
+	resp, err := req.Client.Do(hr)
+	if err != nil {
+		return nil, fmt.Errorf("call API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, truncateForError(data))
+	}
+	return data, nil
 }

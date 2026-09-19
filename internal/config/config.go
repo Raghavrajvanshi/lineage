@@ -29,6 +29,16 @@ type ProjectConfig struct {
 	EnabledPackages     []string            `yaml:"enabled_packages"`
 	ProviderPreferences map[string]string   `yaml:"provider_preferences"`
 	Providers           map[string]Provider `yaml:"providers"`
+	Analysis            AnalysisConfig      `yaml:"analysis,omitempty"`
+}
+
+// AnalysisConfig is the saved default for `lineage analyze`. Never holds a
+// credential: KeyEnv names the environment variable to read one from.
+type AnalysisConfig struct {
+	Provider string `yaml:"provider,omitempty"`
+	Model    string `yaml:"model,omitempty"`
+	Endpoint string `yaml:"endpoint,omitempty"`
+	KeyEnv   string `yaml:"key_env,omitempty"`
 }
 
 type Provider struct {

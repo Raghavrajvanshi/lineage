@@ -32,6 +32,13 @@ func validateIdentifier(field, path, value string) error {
 	return nil
 }
 
+// IsValidIdentifier reports whether value satisfies the same rule Manifest
+// name and version are held to, for callers that turn a value into a path
+// segment (skill directories, workflow names).
+func IsValidIdentifier(value string) bool {
+	return identifierPattern.MatchString(value)
+}
+
 type Manifest struct {
 	Schema       int          `yaml:"schema"`
 	Name         string       `yaml:"name"`

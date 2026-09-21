@@ -48,9 +48,10 @@ and pull-request state remains the source of truth for individual tasks.
 
 2. **Turn existing workspaces into reviewable packages.** #203 and #103
    completed the evidence-inventory and behavioral-model stages. The next
-   sequence is deliberately constrained: agent-assisted analysis (#104),
-   provider-neutral artifact compilation (#106), then portability and
-   behavior validation (#109, #113). The compiler must not execute source
+   sequence is deliberately constrained: agent-assisted analysis (#104, done:
+   `lineage analyze --model-out`), provider-neutral artifact compilation
+   (#106, done: `lineage compile`), then portability and behavior validation
+   (#109, #113) and provider-specific emitters (#107, #108). The compiler must not execute source
    scripts or silently invent missing behavior.
 
 3. **Close receiver trust and lifecycle gaps before broader distribution.**

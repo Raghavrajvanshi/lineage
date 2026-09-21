@@ -108,3 +108,34 @@ func FindWorkflow(pkgs []Package, name string) (Package, Workflow, error) {
 	}
 	return ownerPkg, wf, nil
 }
+
+// SaveWorkflow writes workflows/<wf.Name>/WORKFLOW.md under pkgDir: YAML
+// frontmatter declaring wf.Steps, then body. It is the writer counterpart
+// of LoadWorkflow and emits exactly the shape workflowFrontmatter parses.
+// wf.Name and every step must be valid identifiers, since both become path
+// segments or skill directory names.
+func SaveWorkflow(pkgDir string, wf Workflow, body string) error {
+	if !IsValidIdentifier(wf.Name) {
+		return fmt.Errorf("workflow name %q is not a valid identifier", wf.Name)
+	}
+	for _, step := range wf.Steps {
+		if !IsValidIdentifier(step) {
+			return fmt.Errorf("workflow step %q is not a valid identifier", step)
+		}
+	}
+	front, err := yaml.Marshal(struct {
+		Steps []string `yaml:"steps"`
+	}{Steps: wf.Steps})
+	if err != nil {
+		return fmt.Errorf("encode workflow frontmatter: %w", err)
+	}
+	dir := filepath.Join(pkgDir, "workflows", wf.Name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create workflow directory: %w", err)
+	}
+	content := "---\n" + string(front) + "---\n\n" + body
+	if err := os.WriteFile(filepath.Join(dir, WorkflowFileName), []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write workflow: %w", err)
+	}
+	return nil
+}

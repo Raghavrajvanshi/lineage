@@ -45,7 +45,9 @@ package inventory
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -208,6 +210,19 @@ var defaultIgnoredDirs = map[string]bool{
 // Discover walks root read-only and returns a deterministic inventory. It
 // never creates, edits, deletes, or executes anything under root.
 func Discover(root string) (Inventory, error) {
+	return DiscoverWithLimit(root, 0)
+}
+
+// ErrTooManyFiles is returned by DiscoverWithLimit when the walk finds more
+// regular files than the limit allows.
+var ErrTooManyFiles = errors.New("workspace has too many files")
+
+// DiscoverWithLimit is Discover with a cap on how many regular files the walk
+// may admit (0 means no limit). The cap is enforced while walking, before any
+// file is hashed or read for citations, so a caller that will only ever send a
+// bounded inventory somewhere (see analysis.MaxInventoryEntries) can refuse an
+// oversized tree without first paying to digest and cross-reference all of it.
+func DiscoverWithLimit(root string, maxEntries int) (Inventory, error) {
 	inv := Inventory{Schema: CurrentSchema, Root: root}
 
 	// The discovery root is an argument to validate, not a tree entry: the
@@ -259,6 +274,9 @@ func Discover(root string) (Inventory, error) {
 			return nil
 		}
 
+		if maxEntries > 0 && len(relPaths) >= maxEntries {
+			return fmt.Errorf("%w: more than %d files under %s", ErrTooManyFiles, maxEntries, root)
+		}
 		relPaths = append(relPaths, rel)
 		return nil
 	})
@@ -307,10 +325,15 @@ func isIgnoredDir(name string) bool {
 // established this is a regular file, so the two always agree, and this drops
 // a syscall and an error branch per file.
 func digestFile(path string) (string, int64, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", 0, err
 	}
-	h := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(h[:]), int64(len(data)), nil
+	defer f.Close()
+	h := sha256.New()
+	n, err := io.Copy(h, f)
+	if err != nil {
+		return "", 0, err
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), n, nil
 }

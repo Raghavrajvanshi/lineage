@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -171,5 +172,46 @@ func mustWrite(t *testing.T, path string, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMarshalModelIsCanonicalAndByteStable(t *testing.T) {
+	base := BehavioralModel{
+		Schema: CurrentSchema, Name: "n", Intent: "i",
+		Steps: []Step{{ID: "b", Name: "B"}, {ID: "a", Name: "A"}},
+	}
+	decisionsA := []Decision{{ID: "d3", Description: "c"}, {ID: "d1", Description: "a"}, {ID: "d2", Description: "b"}}
+	decisionsB := []Decision{{ID: "d2", Description: "b"}, {ID: "d3", Description: "c"}, {ID: "d1", Description: "a"}}
+
+	x, y := base, base
+	x.Decisions, y.Decisions = decisionsA, decisionsB
+	gotX, err := MarshalModel(x)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotY, err := MarshalModel(y)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotX, gotY) {
+		t.Fatalf("decision order leaked into the file:\n%s\nvs\n%s", gotX, gotY)
+	}
+	if !bytes.HasSuffix(gotX, []byte("}\n")) || !bytes.Contains(gotX, []byte("\n  \"steps\"")) {
+		t.Errorf("not indented JSON with trailing newline:\n%s", gotX)
+	}
+	if decisionsA[0].ID != "d3" {
+		t.Error("MarshalModel modified the caller's decisions")
+	}
+
+	parsed, err := ParseModel(gotX)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Steps[0].ID != "b" || parsed.Steps[1].ID != "a" {
+		t.Errorf("step order is semantic and must be kept, got %v", parsed.Steps)
+	}
+	again, err := MarshalModel(parsed)
+	if err != nil || !bytes.Equal(again, gotX) {
+		t.Errorf("round trip changed bytes (err %v):\n%s", err, again)
 	}
 }

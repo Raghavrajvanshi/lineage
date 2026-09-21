@@ -4,6 +4,15 @@ All notable changes to Lineage will be documented here.
 
 ## Unreleased
 
+- **Breaking:** `lineage analyze` no longer defaults to Claude or a built-in
+  model (#288). Choose a provider (`--provider anthropic|openai|openrouter`)
+  and `--model`; the key comes from that provider's environment variable.
+  Adapters are distinct, endpoints are overridable (`--endpoint`, https or
+  localhost only), an egress notice and confirmation (or `--yes` in CI)
+  precede any send, and `.lineage/config.yaml` may hold an `analysis:` default
+  (never the key). `--provider claude` is now `--provider anthropic --model
+  <id>`.
+
 - Instruction-risk scanning (#128): `lineage package validate`/`publish` now
   check skills, workflows, agents, policies, adapters, and
   `setup.files[].template` for risky agent-instruction patterns (prompt
@@ -23,6 +32,13 @@ All notable changes to Lineage will be documented here.
   regenerable-vs-authoritative classification in ADR 0015 (#200).
 ### Added
 
+- Add `lineage compile <model.json> <path> --out <dir>` (#106): compiles a
+  saved behavioral model into a provider-neutral package (`lineage.yaml`, one
+  skill per step with bundled scripts and references, `WORKFLOW.md`, and
+  review-only evidence). It refuses while decisions are unresolved, re-verifies
+  source digests, validates in a staging directory, and reports notes for
+  risky mappings. Add `lineage analyze --model-out` to save the full model and
+  `packages.SaveWorkflow` as the `WORKFLOW.md` writer.
 - Add a versioned, provider-neutral behavioral model for compiled workflows
   (#103), built from the source-workspace inventory (#203): ordered steps
   with evidence-linked claims for inputs, outputs, required skills, tools,

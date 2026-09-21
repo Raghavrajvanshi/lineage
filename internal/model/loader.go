@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 
 	"github.com/agentic-lineage/lineage/internal/inventory"
@@ -102,6 +103,22 @@ func ParseModel(data []byte) (BehavioralModel, error) {
 	}
 	sortDecisions(m.Decisions)
 	return m, nil
+}
+
+// MarshalModel is the write half of ParseModel: the canonical persisted form
+// of a BehavioralModel, indented JSON with a trailing newline. Decisions are
+// written sorted by ID (the order ParseModel restores), never in the caller's
+// iteration order, so two runs over the same model produce identical bytes.
+// Steps and every claim list keep their given order, which is semantic. m is
+// not modified.
+func MarshalModel(m BehavioralModel) ([]byte, error) {
+	m.Decisions = slices.Clone(m.Decisions)
+	sortDecisions(m.Decisions)
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode behavioral model: %w", err)
+	}
+	return append(data, '\n'), nil
 }
 
 func sortDecisions(decisions []Decision) {

@@ -247,8 +247,9 @@ installs as `cursor-agent`, sometimes aliased `agent`), so `lineage run cursor`
 will usually need the `providers.cursor.binary` override shown below —
 `lineage doctor` says so explicitly if it can't find a match on `PATH`.
 
-For the contributor-facing work to compile an existing agent workspace into
-those portable artifacts, see
+To turn an existing agent workspace into a portable package, use
+`lineage analyze <path> --model-out model.json` then
+`lineage compile model.json <path> --out <dir>`; see
 [Compiling Existing Workspaces](docs/guides/compiling-existing-workspaces.md).
 
 Project configuration lives at `.lineage/config.yaml`.

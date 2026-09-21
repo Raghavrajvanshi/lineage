@@ -8,7 +8,6 @@ import (
 
 	"github.com/agentic-lineage/lineage/internal/analysis"
 	"github.com/agentic-lineage/lineage/internal/model"
-	"gopkg.in/yaml.v3"
 )
 
 // EvidenceLocation is a click-through pointer to the source file (and,
@@ -46,7 +45,7 @@ type DecisionSummary struct {
 // see EvidenceLocation on StepSummary/DecisionSummary.
 type AnalysisReport struct {
 	// Provider distinguishes a real analysis run from a fixture-driven test
-	// run ("claude" vs "fixture:<path>") - both can produce an identically-
+	// run ("<provider name>" vs "fixture:<path>") - both can produce an identically-
 	// shaped clean report, so without this field a leftover --fixture flag
 	// could make a canned test response look like a trusted real analysis.
 	Provider              string            `yaml:"provider"`
@@ -233,10 +232,5 @@ func printAnalysisReport(stdout io.Writer, r AnalysisReport) {
 // helper since PackageReport's own writer isn't generic either (one type,
 // one function, following this package's existing pattern).
 func writeAnalysisYAML(stdout io.Writer, report AnalysisReport) error {
-	enc := yaml.NewEncoder(stdout)
-	enc.SetIndent(2)
-	if err := enc.Encode(report); err != nil {
-		return fmt.Errorf("encode yaml: %w", err)
-	}
-	return enc.Close()
+	return writeYAML(stdout, report)
 }

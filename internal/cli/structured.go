@@ -171,7 +171,7 @@ func nonNilMCP(values []packages.MCPDependency) []packages.MCPDependency {
 // used directly (rather than yaml.Marshal) purely for its indent control,
 // matching the two-space indent lineage.yaml manifests already use
 // elsewhere in this project.
-func writeYAML(stdout io.Writer, report PackageReport) error {
+func writeYAML(stdout io.Writer, report any) error {
 	enc := yaml.NewEncoder(stdout)
 	enc.SetIndent(2)
 	if err := enc.Encode(report); err != nil {
